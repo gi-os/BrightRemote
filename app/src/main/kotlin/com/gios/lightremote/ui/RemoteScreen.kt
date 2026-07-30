@@ -3,6 +3,7 @@ package com.gios.lightremote.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -32,6 +33,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gios.lightremote.R
 import com.gios.lightremote.companion.CompanionClient
@@ -113,10 +115,16 @@ fun RemoteScreen(
             Column {
                 // Inside the bottom bar slot, so opening the drawer shortens the pad instead
                 // of covering it. Scaffold hands the content whatever height is left.
+                //
+                // The drawer slides up from behind the bar, which needs two things to look
+                // right: the bar has to be opaque, and it has to draw last. Declaration order
+                // already gives the second, but zIndex says so out loud — this is the kind of
+                // thing a later reorder breaks silently.
                 AnimatedVisibility(
                     visible = showMore && connected,
                     enter = slideInVertically { it },
                     exit = slideOutVertically { it },
+                    modifier = Modifier.zIndex(0f),
                 ) {
                     MorePanel(
                         vm = vm,
@@ -129,30 +137,32 @@ fun RemoteScreen(
                         onOpenKeyboard = { showMore = false; onOpenKeyboard() },
                     )
                 }
-                LightIconBar(
-                    listOf(
-                        // Tap is back; hold is the menu. tvOS has no separate menu button —
-                        // holding back is how you get the overlay — so there is no reason for
-                        // this app to carry one either.
-                        BarIcon(
-                            R.drawable.ic_back_white,
-                            "Back, hold for menu",
-                            enabled = connected,
-                            onLongClick = { vm.controlCenter() },
-                        ) { vm.press(HidCommand.Menu) },
-                        BarIcon(
-                            R.drawable.ic_home_white,
-                            "Home, hold for app switcher",
-                            enabled = connected,
-                            onLongClick = { vm.hold(HidCommand.Home) },
-                        ) { vm.press(HidCommand.Home) },
-                        BarIcon(
-                            R.drawable.ic_more_white,
-                            if (showMore) "Hide controls" else "Show controls",
-                            enabled = connected,
-                        ) { showMore = !showMore },
-                    ),
-                )
+                Box(Modifier.zIndex(1f)) {
+                    LightIconBar(
+                        listOf(
+                            // Tap is back; hold is the menu. tvOS has no separate menu button
+                            // — holding back is how you get the overlay — so there is no
+                            // reason for this app to carry one either.
+                            BarIcon(
+                                R.drawable.ic_back_white,
+                                "Back, hold for menu",
+                                enabled = connected,
+                                onLongClick = { vm.controlCenter() },
+                            ) { vm.press(HidCommand.Menu) },
+                            BarIcon(
+                                R.drawable.ic_home_white,
+                                "Home, hold for app switcher",
+                                enabled = connected,
+                                onLongClick = { vm.hold(HidCommand.Home) },
+                            ) { vm.press(HidCommand.Home) },
+                            BarIcon(
+                                R.drawable.ic_more_white,
+                                if (showMore) "Hide controls" else "Show controls",
+                                enabled = connected,
+                            ) { showMore = !showMore },
+                        ),
+                    )
+                }
             }
         },
     ) { padding ->
@@ -287,7 +297,13 @@ private fun MorePanel(
     val state by vm.state.collectAsStateWithLifecycle()
     val playing = state.controls.anyPlayback
 
-    Column(Modifier.fillMaxWidth()) {
+    // Opaque too: while it slides the pad is behind it, and a translucent drawer over a
+    // trackpad reads as a rendering fault rather than as a panel.
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(LightColors.Background),
+    ) {
         Rule()
         Row(
             Modifier

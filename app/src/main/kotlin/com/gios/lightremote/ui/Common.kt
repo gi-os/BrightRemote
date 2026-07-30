@@ -41,7 +41,7 @@ fun LightTopBar(
     onBack: (() -> Unit)? = null,
     action: (@Composable () -> Unit)? = null,
 ) {
-    Column {
+    Column(Modifier.background(LightColors.Background)) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -105,7 +105,7 @@ data class BarAction(val label: String, val enabled: Boolean = true, val onClick
 @Composable
 fun LightBottomBar(actions: List<BarAction>) {
     require(actions.size <= 3) { "LightOS allows at most three text items in a bottom bar" }
-    Column {
+    Column(Modifier.background(LightColors.Background)) {
         Rule()
         Row(
             Modifier
@@ -165,7 +165,9 @@ data class BarIcon(
 @Composable
 fun LightIconBar(icons: List<BarIcon>) {
     require(icons.size <= 5) { "LightOS allows at most five icon items in a bottom bar" }
-    Column {
+    // Opaque, not transparent. Anything sliding in from below passes behind this bar, and
+    // without a background the moving content is visible straight through the icons.
+    Column(Modifier.background(LightColors.Background)) {
         Rule()
         Row(
             Modifier
