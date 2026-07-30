@@ -332,6 +332,8 @@ class CompanionClient(
     }
 
     suspend fun press(command: HidCommand) {
+        // Nudging the volume by hand is an implicit unmute, so the remembered level goes.
+        if (command == HidCommand.VolumeUp || command == HidCommand.VolumeDown) clearMute()
         hid(true, command)
         hid(false, command)
     }
@@ -392,6 +394,39 @@ class CompanionClient(
         mediaControl(MediaControlCommand.SetVolume, mapOf("_vol" to level.coerceIn(0.0, 1.0)))
         volume = level.coerceIn(0.0, 1.0)
         onStateChanged?.invoke()
+    }
+
+    /**
+     * Level to restore to, or null when not muted.
+     *
+     * Companion has no mute command — the HID table has volume up and down and nothing else —
+     * so mute is volume zero with the previous level remembered here. That means it only works
+     * on a TV that reports volume control at all: where sound goes out over HDMI to a
+     * receiver, the set often refuses SetVolume and the failure surfaces as an error rather
+     * than as silence.
+     */
+    private var levelBeforeMute: Double? = null
+
+    val isMuted: Boolean get() = levelBeforeMute != null
+
+    suspend fun toggleMute() {
+        val restore = levelBeforeMute
+        if (restore != null) {
+            setVolume(restore)
+            levelBeforeMute = null
+            return
+        }
+        // Read the level first: the last value we saw may be stale, or we may never have
+        // asked, and muting to zero without knowing where to come back to is a trap.
+        runCatching { refreshVolume() }
+        // Already silent, so unmuting later needs somewhere plausible to go.
+        levelBeforeMute = if (volume > 0.0) volume else 0.25
+        setVolume(0.0)
+    }
+
+    /** A volume change by any other route means the user is no longer muted. */
+    private fun clearMute() {
+        levelBeforeMute = null
     }
 
     // ------------------------------------------------------------------ apps

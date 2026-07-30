@@ -33,6 +33,7 @@ data class RemoteUiState(
     val power: PowerState = PowerState.Unknown,
     val controls: MediaControlFlags = MediaControlFlags.None,
     val volume: Double = 0.0,
+    val muted: Boolean = false,
     val apps: List<InstalledApp> = emptyList(),
     val appsLoading: Boolean = false,
     val pinned: Set<String> = emptySet(),
@@ -65,6 +66,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 power = client.powerState,
                 controls = client.mediaControlFlags,
                 volume = client.volume,
+                muted = client.isMuted,
             )
         }
         client.onDisconnected = { cause ->
@@ -299,6 +301,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     fun skipBackward() = command { client.skipBy(-15.0) }
     fun volumeUp() = command { client.press(HidCommand.VolumeUp) }
     fun volumeDown() = command { client.press(HidCommand.VolumeDown) }
+    fun toggleMute() = command { client.toggleMute() }
     fun controlCenter() = command { client.controlCenter() }
     fun click() = command { client.click() }
 

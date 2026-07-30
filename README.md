@@ -17,9 +17,15 @@ Three buttons sit along the bottom:
 - **Back** — tap for back, hold for the menu overlay. tvOS has no separate menu button —
   holding back is how you get the overlay — so this app does not carry one either.
 - **Home** — tap for home, hold for the app switcher.
-- **More** — slides up everything else: play/pause, skip back and forward 15s, volume, the
-  D-pad/trackpad toggle, apps and the keyboard. The playback buttons dim when the TV reports
-  it has no media controls to offer.
+- **More** — slides up everything else: play/pause and skip back/forward 15s, then volume
+  down, mute and volume up, then the D-pad/trackpad toggle, apps and the keyboard. The
+  playback buttons dim when the TV reports it has no media controls to offer.
+
+Mute is volume zero with the previous level remembered, because Companion has no mute command
+— the HID table has volume up and down and nothing else. So it only works on a TV that
+reports volume control at all: where sound leaves over HDMI to a receiver the set often
+refuses `SetVolume`, and that surfaces as an error rather than as silence. Nudging volume by
+hand counts as unmuting.
 
 Also:
 

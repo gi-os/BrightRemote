@@ -206,6 +206,44 @@ def more_body() -> list[str]:
     return [filled(circle(x, MORE_DOT_Y, MORE_DOT_R)) for x in MORE_DOTS_X]
 
 
+# ---------------------------------------------------------------- volume
+# One speaker cone, three endings: one wave for down, two for up, a cross for mute. Drawn as
+# a family on purpose — these three sit next to each other, so the only thing that should
+# differ between them is the part that carries the meaning.
+#
+# The SDK's speaker icons were doing this job and the wrong one was on the volume-down button:
+# a crossed-out speaker means mute, not quieter.
+SPK_CONE = "M 7,12 H 11 L 17,7 V 23 L 11,18 H 7 Z"
+SPK_MOUTH = (17.0, 15.0)
+SPK_WAVE_R = (3.0, 5.5)
+SPK_CROSS = ((19.0, 11.5), (25.0, 17.5))
+
+
+def _wave(radius: float) -> str:
+    """Arc opening to the right of the cone, symmetric about the horizontal."""
+    cx, cy = SPK_MOUTH
+    # +/-45 degrees, so each wave spans a right angle and reads as a wave rather than a ring.
+    offset = radius * 0.7071
+    return f"M {cx + offset:.2f},{cy - offset:.2f} A {radius},{radius} 0 0 1 {cx + offset:.2f},{cy + offset:.2f}"
+
+
+def volume_down_body() -> list[str]:
+    return [filled(SPK_CONE), stroked(_wave(SPK_WAVE_R[0]), width=2.0)]
+
+
+def volume_up_body() -> list[str]:
+    return [filled(SPK_CONE)] + [stroked(_wave(r), width=2.0) for r in SPK_WAVE_R]
+
+
+def mute_body() -> list[str]:
+    (x0, y0), (x1, y1) = SPK_CROSS
+    return [
+        filled(SPK_CONE),
+        stroked(f"M {x0},{y0} L {x1},{y1}", width=2.0),
+        stroked(f"M {x1},{y0} L {x0},{y1}", width=2.0),
+    ]
+
+
 ICONS = {
     "ic_dpad_white": dpad_body,
     "ic_trackpad_white": trackpad_body,
@@ -213,6 +251,9 @@ ICONS = {
     "ic_keyboard_white": keyboard_body,
     "ic_home_white": home_body,
     "ic_more_white": more_body,
+    "ic_volume_down_white": volume_down_body,
+    "ic_volume_up_white": volume_up_body,
+    "ic_mute_white": mute_body,
 }
 
 
@@ -233,6 +274,9 @@ def check_bounds() -> None:
     assert widest + 2 * edge < KB_BOX[2] - KB_BOX[0], "key row wider than the keyboard case"
     span = 3 * GRID_SIZE + 2 * GRID_GAP
     assert span < CANVAS, "app grid wider than the canvas"
+    # The widest volume mark is the mute cross; it must not run off the right edge.
+    assert SPK_CROSS[1][0] + STROKE / 2 <= CANVAS, "mute cross escapes the canvas"
+    assert SPK_MOUTH[0] + max(SPK_WAVE_R) + STROKE / 2 <= CANVAS, "volume waves escape the canvas"
 
 
 def write_icons() -> None:
@@ -310,6 +354,22 @@ def _draw(d, name: str, s: int) -> None:
         for x in MORE_DOTS_X:
             cx, cy = x * s, MORE_DOT_Y * s
             d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=white)
+    elif name in ("ic_volume_down_white", "ic_volume_up_white", "ic_mute_white"):
+        d.polygon(
+            [(7 * s, 12 * s), (11 * s, 12 * s), (17 * s, 7 * s), (17 * s, 23 * s), (11 * s, 18 * s), (7 * s, 18 * s)],
+            fill=white,
+        )
+        cx, cy = SPK_MOUTH
+        radii = {"ic_volume_down_white": SPK_WAVE_R[:1], "ic_volume_up_white": SPK_WAVE_R}.get(name, ())
+        for r in radii:
+            d.arc(
+                [(cx - r) * s, (cy - r) * s, (cx + r) * s, (cy + r) * s],
+                -45, 45, fill=white, width=int(2.0 * s),
+            )
+        if name == "ic_mute_white":
+            (x0, y0), (x1, y1) = SPK_CROSS
+            d.line([x0 * s, y0 * s, x1 * s, y1 * s], fill=white, width=int(2.0 * s))
+            d.line([x1 * s, y0 * s, x0 * s, y1 * s], fill=white, width=int(2.0 * s))
     else:
         # Loud on purpose. The preview is the only place these get judged, and an icon with
         # no branch here renders as an empty tile that looks like a design decision.

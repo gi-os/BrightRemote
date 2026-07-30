@@ -315,8 +315,23 @@ private fun MorePanel(
             PanelIcon(R.drawable.ic_skip_backward_fifteen_white, "Back 15 seconds", playing) { vm.skipBackward() }
             PanelIcon(R.drawable.ic_play_white, "Play or pause") { vm.playPause() }
             PanelIcon(R.drawable.ic_skip_forward_fifteen_white, "Forward 15 seconds", playing) { vm.skipForward() }
-            PanelIcon(R.drawable.ic_speaker_muted, "Volume down") { vm.volumeDown() }
-            PanelIcon(R.drawable.ic_speaker_on, "Volume up") { vm.volumeUp() }
+        }
+        Rule()
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 0.45f.gridDp()),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PanelIcon(R.drawable.ic_volume_down_white, "Volume down") { vm.volumeDown() }
+            PanelIcon(
+                R.drawable.ic_mute_white,
+                if (state.muted) "Unmute" else "Mute",
+                // Dimmed while muted, so the button shows the state it put the TV into.
+                dim = state.muted,
+            ) { vm.toggleMute() }
+            PanelIcon(R.drawable.ic_volume_up_white, "Volume up") { vm.volumeUp() }
         }
         Rule()
         Row(
@@ -343,6 +358,8 @@ private fun PanelIcon(
     resource: Int,
     label: String,
     enabled: Boolean = true,
+    /** Drawn quietly but still tappable — for a button whose state is "on", like mute. */
+    dim: Boolean = false,
     onClick: () -> Unit,
 ) {
     Box(
@@ -354,7 +371,11 @@ private fun PanelIcon(
         Icon(
             painterResource(resource),
             contentDescription = label,
-            tint = if (enabled) LightColors.Content else LightColors.Faint,
+            tint = when {
+                !enabled -> LightColors.Faint
+                dim -> LightColors.ContentSecondary
+                else -> LightColors.Content
+            },
             modifier = Modifier.size(2.2f.gridDp()),
         )
     }
