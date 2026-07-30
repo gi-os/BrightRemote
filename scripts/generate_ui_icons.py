@@ -171,11 +171,48 @@ def keyboard_body() -> list[str]:
     return body
 
 
+# ---------------------------------------------------------------- home
+# House outline: roof over a box. The SDK has no home mark at all, and a house is the one
+# glyph nobody has to learn.
+# Overhang is what decides whether this is a house or an up arrow. At 3.5 either side the
+# roof outruns the walls and the eye reads a chevron on a stick; 2 keeps it a house.
+HOME_ROOF = ((5.5, 15.0), (15.0, 7.0), (24.5, 15.0))
+HOME_BODY = (7.5, 14.5, 22.5, 24.0)
+
+
+def home_body() -> list[str]:
+    (ax, ay), (bx, by), (cx, cy) = HOME_ROOF
+    return [
+        stroked(f"M {ax},{ay} L {bx},{by} L {cx},{cy}"),
+        # Open at the top: the roof already closes it, and drawing the lid as well leaves a
+        # double-thick line across the middle of the house.
+        stroked(
+            f"M {HOME_BODY[0]},{HOME_BODY[1]} V {HOME_BODY[3]} "
+            f"H {HOME_BODY[2]} V {HOME_BODY[1]}"
+        ),
+    ]
+
+
+# ---------------------------------------------------------------- more
+# Three dots. The drawer behind it holds playback, the pad toggle, apps and the keyboard —
+# too mixed a bag for any one picture, and an ellipsis is what everybody already reads as
+# "the rest of it".
+MORE_DOTS_X = (8.0, 15.0, 22.0)
+MORE_DOT_Y = 15.0
+MORE_DOT_R = 2.4
+
+
+def more_body() -> list[str]:
+    return [filled(circle(x, MORE_DOT_Y, MORE_DOT_R)) for x in MORE_DOTS_X]
+
+
 ICONS = {
     "ic_dpad_white": dpad_body,
     "ic_trackpad_white": trackpad_body,
     "ic_apps_grid_white": grid_body,
     "ic_keyboard_white": keyboard_body,
+    "ic_home_white": home_body,
+    "ic_more_white": more_body,
 }
 
 
@@ -263,6 +300,20 @@ def _draw(d, name: str, s: int) -> None:
         space_y = _row_y(len(KB_ROWS))
         o = (CANVAS - KB_SPACE_W) / 2
         d.rectangle([o * s, space_y * s, (o + KB_SPACE_W) * s, (space_y + KB_KEY_H) * s], fill=white)
+    elif name == "ic_home_white":
+        pts = [(x * s, y * s) for x, y in HOME_ROOF]
+        d.line(pts, fill=white, width=int(STROKE * s), joint="curve")
+        x0, y0, x1, y1 = (v * s for v in HOME_BODY)
+        d.line([(x0, y0), (x0, y1), (x1, y1), (x1, y0)], fill=white, width=int(STROKE * s), joint="curve")
+    elif name == "ic_more_white":
+        r = MORE_DOT_R * s
+        for x in MORE_DOTS_X:
+            cx, cy = x * s, MORE_DOT_Y * s
+            d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=white)
+    else:
+        # Loud on purpose. The preview is the only place these get judged, and an icon with
+        # no branch here renders as an empty tile that looks like a design decision.
+        raise AssertionError(f"no preview mirror for {name}")
 
 
 if __name__ == "__main__":

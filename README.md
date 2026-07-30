@@ -8,20 +8,34 @@ app on another device.
 
 ## What it does
 
-- **D-pad** — up/down/left/right and select.
-- **Swipe pad** — a trackpad mapped onto the TV's 1000x1000 touch surface, tap to select.
-- **Back / Menu / Home** on both faces. Back and Home also respond to a hold: holding Back
-  jumps to the home screen, holding Home opens the app switcher.
-- **Transport** — play/pause, skip back and forward 15s, volume up and down. The playback
-  buttons dim when the TV reports it has no media controls to offer.
-- **Power** — sleep and wake, with the current state shown by how the icon is lit.
+Nearly the whole panel is the thing you touch. **Swipe** to move, **tap** to select — the pad
+has no border and nothing drawn on it, because a remote you glance at while looking at a
+television should not present a dozen targets.
+
+Three buttons sit along the bottom:
+
+- **Back** — tap for back, hold for the menu overlay. tvOS has no separate menu button —
+  holding back is how you get the overlay — so this app does not carry one either.
+- **Home** — tap for home, hold for the app switcher.
+- **More** — slides up everything else: play/pause, skip back and forward 15s, volume, the
+  D-pad/trackpad toggle, apps and the keyboard. The playback buttons dim when the TV reports
+  it has no media controls to offer.
+
+Also:
+
+- **The volume rocker drives the television**, not the phone, while a TV is connected and the
+  remote is on screen. Elsewhere in the app the keys do what they normally do.
+- **Power** — sleep and wake, top right, with the current state shown by how the icon is lit.
 - **Apps** — everything launchable, with the ones you use pinned to the top. Hold a row to
   pin or unpin it.
 - **Type** — send text to the focused search field on the TV.
+- **The D-pad** is still there behind More, for stepping through a grid of tiles.
 
-The names follow the television rather than the protocol. The HID command Apple calls "Menu"
-is what tvOS treats as *back*, so it is labelled Back; what sits behind "Menu" here is the
-control-centre overlay, which is the menu a modern Apple TV actually shows.
+Every button ticks the motor on finger-*down*, not on release: your eyes are on the
+television, so the press has to be confirmed in your hand the instant it lands.
+
+Names follow the television rather than the protocol. The HID command Apple calls "Menu" is
+what tvOS treats as *back*, which is why it is labelled Back.
 
 ## What it does not do
 
@@ -89,6 +103,16 @@ The wheel does not drive the TV. It scrolls this app's own lists and nothing els
 a scroll gesture, so mapping it onto D-pad presses would send a burst of them, and the click
 and camera button belong to [LightControl](https://github.com/gi-os/LightControl), which owns
 them across the whole phone.
+
+The volume rocker *is* forwarded, through the same `dispatchKeyEvent` override and a bus of
+its own. Both halves of the press are swallowed — leaving the UP to Android is what pops its
+volume panel over the remote — and it is only intercepted while a television is connected and
+the remote is the visible screen, because grabbing the keys for as long as the app is open
+would leave the phone's own volume unreachable.
+
+Haptics need `android.permission.VIBRATE` in the manifest. Without it `Vibrator.vibrate`
+throws a `SecurityException` that the helper swallows, so every button stays silent and
+nothing anywhere explains why.
 
 ### The protocol layer
 

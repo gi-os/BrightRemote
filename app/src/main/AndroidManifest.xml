@@ -4,6 +4,14 @@
     <!-- Local network only: mDNS browsing plus a TCP socket to the Apple TV. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      Every button confirms itself with a 45ms tick on finger-down, which is the whole point
+      on a remote: your eyes are on the television, not on the phone. Without this permission
+      Vibrator.vibrate throws a SecurityException that the haptic helper swallows, so the
+      buttons stay silent and nothing anywhere says why.
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!--
       Android 13+ gates mDNS discovery behind NEARBY_WIFI_DEVICES. neverForLocation is set
       because this is service discovery, not positioning, and without it the permission

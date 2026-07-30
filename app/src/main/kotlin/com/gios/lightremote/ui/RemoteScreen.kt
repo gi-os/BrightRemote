@@ -1,7 +1,9 @@
 package com.gios.lightremote.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.border
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -17,6 +19,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +38,7 @@ import com.gios.lightremote.companion.CompanionClient
 import com.gios.lightremote.companion.HidCommand
 import com.gios.lightremote.companion.PowerState
 import com.gios.lightremote.companion.TouchPhase
+import com.gios.lightremote.hw.LocalVolumeBus
 import com.gios.lightremote.ui.theme.LightColors
 import com.gios.lightremote.ui.theme.LightGrid
 import com.gios.lightremote.ui.theme.gridDp
@@ -41,9 +46,12 @@ import com.gios.lightremote.ui.theme.lightClickable
 import com.gios.lightremote.ui.theme.tick
 
 /**
- * The remote. Two faces — a D-pad and a swipe trackpad — because they suit different
- * things: the D-pad for stepping through a grid of tiles, the trackpad for long lists and
- * for scrubbing.
+ * The remote.
+ *
+ * Almost all of the panel is the thing you touch. Back and Home earn their place in the
+ * bottom bar because they are used constantly; everything else — playback, volume, the face
+ * toggle, apps, the keyboard — lives behind the third button and slides up when asked for.
+ * A remote you glance at should not present fourteen targets.
  */
 @Composable
 fun RemoteScreen(
@@ -54,6 +62,21 @@ fun RemoteScreen(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     var touchpad by remember { mutableStateOf(vm.preferTouchpad) }
+    var showMore by remember { mutableStateOf(false) }
+    val connected = state.connection == ConnectionState.Connected
+
+    // The volume rocker drives the television, but only while one is connected and only while
+    // this screen is up — released on the way out so the phone gets its own volume back.
+    val volumeBus = LocalVolumeBus.current
+    DisposableEffect(volumeBus, connected) {
+        volumeBus?.intercept = connected
+        onDispose { volumeBus?.intercept = false }
+    }
+    LaunchedEffect(volumeBus) {
+        volumeBus?.presses?.collect { delta ->
+            if (delta > 0) vm.volumeUp() else vm.volumeDown()
+        }
+    }
 
     Scaffold(
         containerColor = LightColors.Background,
@@ -62,26 +85,20 @@ fun RemoteScreen(
                 // No title: the panel is short, and the device name is not worth three grid
                 // units when the chevron already leads to the list that names it.
                 title = null,
-                // The chevron goes to the device list rather than out of the app: the
-                // remote is home, so there is nothing behind it to pop to.
                 onBack = onOpenDevices,
                 action = {
-                    // Power doubles as the connection indicator: dim when we don't know. The
-                    // glyph used to be "⏻", which Akkurat has no character for, so the button
-                    // rendered as nothing at all.
+                    // Power doubles as the connection indicator: dim when we don't know.
                     Box(
                         Modifier
                             .size(LightGrid.BAR_ICON_UNITS.gridDp())
-                            .lightClickable(
-                                enabled = state.connection == ConnectionState.Connected,
-                            ) { vm.togglePower() },
+                            .lightClickable(enabled = connected) { vm.togglePower() },
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             painterResource(R.drawable.ic_power_white),
                             contentDescription = "Power",
                             tint = when {
-                                state.connection != ConnectionState.Connected -> LightColors.Faint
+                                !connected -> LightColors.Faint
                                 state.power == PowerState.On -> LightColors.Content
                                 state.power == PowerState.Screensaver -> LightColors.ContentSecondary
                                 else -> LightColors.Faint
@@ -93,22 +110,50 @@ fun RemoteScreen(
             )
         },
         bottomBar = {
-            val live = state.connection == ConnectionState.Connected
-            LightIconBar(
-                listOf(
-                    BarIcon(
-                        // Shows what you would switch *to*, which is the convention the rest
-                        // of LightOS follows for a toggle.
-                        icon = if (touchpad) R.drawable.ic_dpad_white else R.drawable.ic_trackpad_white,
-                        label = if (touchpad) "Switch to D-pad" else "Switch to trackpad",
-                    ) {
-                        touchpad = !touchpad
-                        vm.preferTouchpad = touchpad
-                    },
-                    BarIcon(R.drawable.ic_apps_grid_white, "Apps", enabled = live) { onOpenApps() },
-                    BarIcon(R.drawable.ic_keyboard_white, "Type", enabled = live) { onOpenKeyboard() },
-                ),
-            )
+            Column {
+                // Inside the bottom bar slot, so opening the drawer shortens the pad instead
+                // of covering it. Scaffold hands the content whatever height is left.
+                AnimatedVisibility(
+                    visible = showMore && connected,
+                    enter = slideInVertically { it },
+                    exit = slideOutVertically { it },
+                ) {
+                    MorePanel(
+                        vm = vm,
+                        touchpad = touchpad,
+                        onToggleFace = {
+                            touchpad = !touchpad
+                            vm.preferTouchpad = touchpad
+                        },
+                        onOpenApps = { showMore = false; onOpenApps() },
+                        onOpenKeyboard = { showMore = false; onOpenKeyboard() },
+                    )
+                }
+                LightIconBar(
+                    listOf(
+                        // Tap is back; hold is the menu. tvOS has no separate menu button —
+                        // holding back is how you get the overlay — so there is no reason for
+                        // this app to carry one either.
+                        BarIcon(
+                            R.drawable.ic_back_white,
+                            "Back, hold for menu",
+                            enabled = connected,
+                            onLongClick = { vm.controlCenter() },
+                        ) { vm.press(HidCommand.Menu) },
+                        BarIcon(
+                            R.drawable.ic_home_white,
+                            "Home, hold for app switcher",
+                            enabled = connected,
+                            onLongClick = { vm.hold(HidCommand.Home) },
+                        ) { vm.press(HidCommand.Home) },
+                        BarIcon(
+                            R.drawable.ic_more_white,
+                            if (showMore) "Hide controls" else "Show controls",
+                            enabled = connected,
+                        ) { showMore = !showMore },
+                    ),
+                )
+            }
         },
     ) { padding ->
         Column(
@@ -138,19 +183,67 @@ fun RemoteScreen(
                     LightRow(label = "Devices", onClick = onOpenDevices)
                     Rule()
                 }
-                ConnectionState.Connected -> if (touchpad) {
-                    Touchpad(vm, Modifier.weight(1f))
-                    TransportRow(vm)
-                } else {
-                    DirectionPad(vm, Modifier.weight(1f))
-                    TransportRow(vm)
-                }
+                ConnectionState.Connected ->
+                    if (touchpad) Touchpad(vm, Modifier.weight(1f))
+                    else DirectionPad(vm, Modifier.weight(1f))
             }
         }
     }
 }
 
-/** Up/down/left/right around a centre Select, plus Menu and Home underneath. */
+/**
+ * The swipe surface: the whole area, no border, nothing drawn.
+ *
+ * Coordinates map straight onto the TV's 1000x1000 touch surface, and samples are throttled
+ * to roughly one per 16ms. Both details matter: sending every pointer event floods the link
+ * and the TV reads the burst as a flick, so a small drag overshoots by several rows.
+ */
+@Composable
+private fun Touchpad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    Box(
+        modifier
+            .fillMaxWidth()
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    tick(context)
+                    val scaleX = CompanionClient.TOUCHPAD_SIZE / size.width.toFloat()
+                    val scaleY = CompanionClient.TOUCHPAD_SIZE / size.height.toFloat()
+                    var lastSent = 0L
+                    var lastX = (down.position.x * scaleX).toInt()
+                    var lastY = (down.position.y * scaleY).toInt()
+                    var moved = false
+                    vm.touch(lastX, lastY, TouchPhase.Press)
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        val x = (change.position.x * scaleX).toInt()
+                        val y = (change.position.y * scaleY).toInt()
+                        if (!change.pressed) {
+                            vm.touch(x, y, TouchPhase.Release)
+                            // A press that never moved is a click, not a swipe.
+                            if (!moved) vm.click()
+                            break
+                        }
+                        if (kotlin.math.abs(x - lastX) > 8 || kotlin.math.abs(y - lastY) > 8) {
+                            moved = true
+                        }
+                        val now = System.currentTimeMillis()
+                        if (now - lastSent >= 16) {
+                            vm.touch(x, y, TouchPhase.Hold)
+                            lastSent = now
+                            lastX = x
+                            lastY = y
+                        }
+                    }
+                }
+            },
+    )
+}
+
+/** Up/down/left/right around a centre Select. */
 @Composable
 private fun DirectionPad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
     Column(
@@ -173,30 +266,81 @@ private fun DirectionPad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
             PadButton({ vm.press(HidCommand.Right) }) { ArrowIcon(R.drawable.ic_arrow_right_white) }
         }
         PadButton({ vm.press(HidCommand.Down) }) { ArrowIcon(R.drawable.ic_down_white) }
-        NavigationRow(vm)
     }
 }
 
 /**
- * Back, Menu, Home — named the way the television behaves rather than the way the protocol
- * does.
+ * The drawer: playback and volume on top, the three places to go underneath.
  *
- * The HID command called "Menu" is what tvOS treats as *back*, and holding it is what jumps
- * to the home screen. What sits behind "Menu" here is the control-centre overlay, which is
- * the menu you actually get on a modern Apple TV. Same row on both faces of the remote, so
- * there is always a way back.
+ * The playback row dims when the TV reports it has no media controls — `_iMC` tracks the
+ * foreground app, so on the home screen these genuinely do nothing and showing them as live
+ * would be a lie.
  */
 @Composable
-private fun NavigationRow(vm: RemoteViewModel) {
-    Row(
+private fun MorePanel(
+    vm: RemoteViewModel,
+    touchpad: Boolean,
+    onToggleFace: () -> Unit,
+    onOpenApps: () -> Unit,
+    onOpenKeyboard: () -> Unit,
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val playing = state.controls.anyPlayback
+
+    Column(Modifier.fillMaxWidth()) {
+        Rule()
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 0.45f.gridDp()),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PanelIcon(R.drawable.ic_skip_backward_fifteen_white, "Back 15 seconds", playing) { vm.skipBackward() }
+            PanelIcon(R.drawable.ic_play_white, "Play or pause") { vm.playPause() }
+            PanelIcon(R.drawable.ic_skip_forward_fifteen_white, "Forward 15 seconds", playing) { vm.skipForward() }
+            PanelIcon(R.drawable.ic_speaker_muted, "Volume down") { vm.volumeDown() }
+            PanelIcon(R.drawable.ic_speaker_on, "Volume up") { vm.volumeUp() }
+        }
+        Rule()
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 0.45f.gridDp()),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PanelIcon(
+                // Shows what you would switch *to*, the convention LightOS uses for a toggle.
+                if (touchpad) R.drawable.ic_dpad_white else R.drawable.ic_trackpad_white,
+                if (touchpad) "Switch to D-pad" else "Switch to trackpad",
+                onClick = onToggleFace,
+            )
+            PanelIcon(R.drawable.ic_apps_grid_white, "Apps", onClick = onOpenApps)
+            PanelIcon(R.drawable.ic_keyboard_white, "Type", onClick = onOpenKeyboard)
+        }
+    }
+}
+
+@Composable
+private fun PanelIcon(
+    resource: Int,
+    label: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Box(
         Modifier
-            .fillMaxWidth()
-            .padding(top = 0.8f.gridDp()),
-        horizontalArrangement = Arrangement.SpaceEvenly,
+            .size(width = 4.6f.gridDp(), height = 3f.gridDp())
+            .lightClickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        LabelButton("Back", onClick = { vm.press(HidCommand.Menu) }, onHold = { vm.hold(HidCommand.Menu) })
-        LabelButton("Menu", onClick = { vm.controlCenter() })
-        LabelButton("Home", onClick = { vm.press(HidCommand.Home) }, onHold = { vm.hold(HidCommand.Home) })
+        Icon(
+            painterResource(resource),
+            contentDescription = label,
+            tint = if (enabled) LightColors.Content else LightColors.Faint,
+            modifier = Modifier.size(2.2f.gridDp()),
+        )
     }
 }
 
@@ -222,149 +366,6 @@ private fun PadButton(onClick: () -> Unit, content: @Composable () -> Unit) {
     ) { content() }
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-@Composable
-private fun LabelButton(label: String, onClick: () -> Unit, onHold: (() -> Unit)? = null) {
-    Box(
-        Modifier
-            .size(width = 6.5f.gridDp(), height = 3f.gridDp())
-            .let { base ->
-                if (onHold == null) {
-                    base.lightClickable(onClick = onClick)
-                } else {
-                    base.combinedClickableNoRipple(onClick = onClick, onLongClick = onHold)
-                }
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(label, style = MaterialTheme.typography.labelLarge, color = LightColors.Content)
-    }
-}
-
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-private fun Modifier.combinedClickableNoRipple(
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-): Modifier = combinedClickable(
-    interactionSource = null,
-    indication = null,
-    onLongClick = onLongClick,
-    onClick = onClick,
-)
-
-/**
- * The swipe trackpad.
- *
- * Coordinates map straight onto the TV's 1000x1000 touch surface, and samples are throttled
- * to roughly one per 16ms. Both details matter: sending every pointer event floods the link
- * and the TV reads the burst as a flick, so a small drag overshoots by several rows.
- */
-@Composable
-private fun Touchpad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    Column(
-        modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Box(
-            Modifier
-                // Takes the space that is left rather than forcing a square. aspectRatio(1f)
-                // on a full-width pad asks for 23 grid units of height when only about 21 are
-                // free once the bars and the transport row are placed, and the overflow drew
-                // straight over everything below it.
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 1.5f.gridDp(), vertical = 0.5f.gridDp())
-                .border(1.dp, LightColors.Rule)
-                .pointerInput(Unit) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        tick(context)
-                        val scaleX = CompanionClient.TOUCHPAD_SIZE / size.width.toFloat()
-                        val scaleY = CompanionClient.TOUCHPAD_SIZE / size.height.toFloat()
-                        var lastSent = 0L
-                        var lastX = (down.position.x * scaleX).toInt()
-                        var lastY = (down.position.y * scaleY).toInt()
-                        var moved = false
-                        vm.touch(lastX, lastY, TouchPhase.Press)
-
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            val x = (change.position.x * scaleX).toInt()
-                            val y = (change.position.y * scaleY).toInt()
-                            if (!change.pressed) {
-                                vm.touch(x, y, TouchPhase.Release)
-                                // A press that never moved is a click, not a swipe.
-                                if (!moved) vm.click()
-                                break
-                            }
-                            if (kotlin.math.abs(x - lastX) > 8 || kotlin.math.abs(y - lastY) > 8) {
-                                moved = true
-                            }
-                            val now = System.currentTimeMillis()
-                            if (now - lastSent >= 16) {
-                                vm.touch(x, y, TouchPhase.Hold)
-                                lastSent = now
-                                lastX = x
-                                lastY = y
-                            }
-                        }
-                    }
-                },
-        )
-        // No label inside the pad. It is a surface for a thumb, not something to read, and a
-        // caption in the middle of it just sat under the finger.
-        NavigationRow(vm)
-    }
-}
-
-/**
- * Transport and volume.
- *
- * The playback buttons dim when the TV says it has no media controls to offer — the `_iMC`
- * event tracks the foreground app, so on the home screen these genuinely do nothing and
- * showing them as live would just be a lie.
- */
-@Composable
-private fun TransportRow(vm: RemoteViewModel) {
-    val state by vm.state.collectAsStateWithLifecycle()
-    val playing = state.controls.anyPlayback
-
-    Column {
-        Rule()
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(vertical = 0.5f.gridDp()),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(R.drawable.ic_skip_backward_fifteen_white, enabled = playing) { vm.skipBackward() }
-            IconButton(R.drawable.ic_play_white, enabled = true) { vm.playPause() }
-            IconButton(R.drawable.ic_skip_forward_fifteen_white, enabled = playing) { vm.skipForward() }
-            IconButton(R.drawable.ic_speaker_muted) { vm.volumeDown() }
-            IconButton(R.drawable.ic_speaker_on) { vm.volumeUp() }
-        }
-    }
-}
-
-@Composable
-private fun IconButton(resource: Int, enabled: Boolean = true, onClick: () -> Unit) {
-    Box(
-        Modifier
-            .size(width = 4.6f.gridDp(), height = 3f.gridDp())
-            .lightClickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            painterResource(resource),
-            contentDescription = null,
-            tint = if (enabled) LightColors.Content else LightColors.Faint,
-            modifier = Modifier.size(2.2f.gridDp()),
-        )
-    }
-}
 // Reconnecting automatically was tried and removed: a failed connect goes
 // Connecting -> Disconnected, which is a state *change*, so an effect keyed on the
 // connection state retries forever against a TV that is simply switched off. The Retry row

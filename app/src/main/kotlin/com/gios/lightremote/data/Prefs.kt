@@ -96,9 +96,9 @@ class Prefs(context: Context) {
         get() = prefs.getString(KEY_LAST_DEVICE, null)
         set(value) = prefs.edit().putString(KEY_LAST_DEVICE, value).apply()
 
-    /** Swipe pad or D-pad as the default remote face. */
+    /** Swipe pad or D-pad as the remote face. The pad is the default. */
     var preferTouchpad: Boolean
-        get() = prefs.getBoolean(KEY_PREFER_TOUCHPAD, false)
+        get() = prefs.getBoolean(KEY_PREFER_TOUCHPAD, true)
         set(value) = prefs.edit().putBoolean(KEY_PREFER_TOUCHPAD, value).apply()
 
     /**

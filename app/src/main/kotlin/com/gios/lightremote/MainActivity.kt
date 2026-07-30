@@ -20,7 +20,9 @@ import androidx.navigation.compose.rememberNavController
 import com.gios.lightremote.data.PairedDevice
 import com.gios.lightremote.hw.LightKey
 import com.gios.lightremote.hw.LightKeys
+import com.gios.lightremote.hw.LocalVolumeBus
 import com.gios.lightremote.hw.LocalWheelBus
+import com.gios.lightremote.hw.VolumeBus
 import com.gios.lightremote.hw.WheelBus
 import com.gios.lightremote.ui.AppsScreen
 import com.gios.lightremote.ui.DevicesScreen
@@ -35,6 +37,9 @@ class MainActivity : ComponentActivity() {
 
     /** Wheel notches on their way to whichever screen is up. */
     private val wheel = WheelBus()
+
+    /** Volume rocker presses, when a television is connected to take them. */
+    private val volume = VolumeBus()
 
     /**
      * Every hardware key arrives here first — `DecorView` calls the window callback before
@@ -53,6 +58,22 @@ class MainActivity : ComponentActivity() {
                 return true
             }
             else -> Unit
+        }
+
+        // The rocker drives the television while one is connected. Both halves of the press
+        // are swallowed — leaving the UP to Android is what pops its volume panel over the
+        // remote. Key repeats arrive as further ACTION_DOWNs, so holding it walks the volume.
+        if (volume.intercept) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) volume.send(1)
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) volume.send(-1)
+                    return true
+                }
+            }
         }
         return super.dispatchKeyEvent(event)
     }
@@ -83,7 +104,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                CompositionLocalProvider(LocalWheelBus provides wheel) {
+                CompositionLocalProvider(
+                    LocalWheelBus provides wheel,
+                    LocalVolumeBus provides volume,
+                ) {
                     NavHost(nav, startDestination = "remote") {
                         composable("devices") {
                             DevicesScreen(

@@ -147,6 +147,7 @@ data class BarIcon(
     @androidx.annotation.DrawableRes val icon: Int,
     val label: String,
     val enabled: Boolean = true,
+    val onLongClick: (() -> Unit)? = null,
     val onClick: () -> Unit,
 )
 
@@ -160,6 +161,7 @@ data class BarIcon(
  * Not an overload of [LightBottomBar]: generics erase, so both would compile to the same JVM
  * signature.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun LightIconBar(icons: List<BarIcon>) {
     require(icons.size <= 5) { "LightOS allows at most five icon items in a bottom bar" }
@@ -177,7 +179,20 @@ fun LightIconBar(icons: List<BarIcon>) {
                     Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .lightClickable(enabled = item.enabled, onClick = item.onClick),
+                        .let { base ->
+                            val hold = item.onLongClick
+                            if (hold == null) {
+                                base.lightClickable(enabled = item.enabled, onClick = item.onClick)
+                            } else {
+                                base.combinedClickable(
+                                    interactionSource = null,
+                                    indication = null,
+                                    enabled = item.enabled,
+                                    onLongClick = hold,
+                                    onClick = item.onClick,
+                                )
+                            }
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
