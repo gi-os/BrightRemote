@@ -155,10 +155,18 @@ fun RemoteScreen(
                                 enabled = connected,
                                 onLongClick = { vm.hold(HidCommand.Home) },
                             ) { vm.press(HidCommand.Home) },
+                            // Holding it skips the drawer and goes straight to typing.
+                            // Searching is the one thing you arrive at the phone already
+                            // meaning to do, and two taps to reach a text field is one too
+                            // many when the TV is sitting there with a search box open.
                             BarIcon(
                                 R.drawable.ic_more_white,
-                                if (showMore) "Hide controls" else "Show controls",
+                                if (showMore) "Hide controls, hold to type" else "Show controls, hold to type",
                                 enabled = connected,
+                                onLongClick = {
+                                    showMore = false
+                                    onOpenKeyboard()
+                                },
                             ) { showMore = !showMore },
                         ),
                     )
