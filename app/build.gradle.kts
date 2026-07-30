@@ -15,7 +15,7 @@ android {
         targetSdk = 35
         // CI overwrites both from the workflow run number; see .github/workflows/build.yml
         versionCode = 1
-        versionName = "1.1.0"
+        versionName = "1.2.0"
 
         // The LPIII is arm64 only; shipping four ABIs tripled the APK for nothing.
         ndk { abiFilters += "arm64-v8a" }
@@ -44,6 +44,13 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+
+    testOptions {
+        // The protocol layer traces every frame through android.util.Log, and the stub
+        // android.jar on the unit-test classpath throws from every method by default. The
+        // handshake tests drive that code for real, so let the stubs no-op instead.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

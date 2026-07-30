@@ -131,6 +131,30 @@ Things that cost time to work out and are easy to undo by accident:
   and an overlapping key is a crash, not a duplicate row. Hence namespaced keys plus a filter
   at render time.
 
+## When something goes wrong
+
+The link is encrypted after pair-verify and there is no way to watch it from outside, so the
+app narrates itself:
+
+```
+adb logcat -s LightRemote
+```
+
+Every frame in and out (type, length, whether it was encrypted), every request with its
+transaction id, and every connect step. Payload bytes are deliberately never logged — they
+carry the pairing and session keys.
+
+Two lines matter most:
+
+- `!! unmatched …` — the device answered with a frame or transaction id nobody was waiting
+  for. This is what becomes a timeout a few seconds later, and it says whether the TV replied
+  with something unexpected or never replied at all.
+- `!! could not decrypt a … frame; session keys out of step` — the two ends disagree about the
+  ChaCha counters. Unrecoverable; reconnect.
+
+Timeouts name the frame they were waiting for (`no answer to _sessionStart`) rather than
+saying only that something timed out.
+
 ## Building
 
 Requires JDK 17 and the Android SDK. CI (`.github/workflows/build.yml`) runs the tests,

@@ -133,19 +133,33 @@ class CompanionClient(
 
     // ------------------------------------------------------------------ connecting
 
+    /**
+     * Bumped for every socket. Closing one wakes its reader on another thread, and that
+     * reader's teardown used to clear [connection] and [session] unconditionally — so a
+     * reader from the *previous* socket could finish just after a new one was installed and
+     * wipe it out. Pairing then connecting does exactly that, back to back.
+     */
+    private var generation: Int = 0
+
     private suspend fun openConnection(host: String, port: Int) {
         disconnect()
+        val myGeneration = ++generation
+        Trace.step("connecting to $host:$port (gen $myGeneration)")
         val conn = CompanionConnection(host, port)
         withContext(Dispatchers.IO) { conn.connect() }
         val sess = CompanionSession(conn)
         sess.onEvent = ::handleEvent
         sess.onDisconnect = { cause ->
-            connection = null
-            session = null
-            powerState = PowerState.Unknown
-            mediaControlFlags = MediaControlFlags.None
-            onStateChanged?.invoke()
-            onDisconnected?.invoke(cause)
+            if (myGeneration == generation) {
+                connection = null
+                session = null
+                powerState = PowerState.Unknown
+                mediaControlFlags = MediaControlFlags.None
+                onStateChanged?.invoke()
+                onDisconnected?.invoke(cause)
+            } else {
+                Trace.step("ignoring teardown from stale connection $myGeneration")
+            }
         }
         sess.startReader(scope)
         connection = conn
@@ -166,11 +180,29 @@ class CompanionClient(
         // brings up encryption, the other makes button presses take effect. Everything after
         // is best-effort — a tvOS version without a handler for one of them should cost that
         // feature, not the whole connection.
+        Trace.step("pair-verify")
         val keys = CompanionAuth(sess).verify(credentials)
-        connection!!.enableEncryption(keys.outputKey, keys.inputKey)
+        // Read straight off the local, not the field: a stale teardown could otherwise have
+        // nulled it between opening the socket and getting here.
+        val conn = connection ?: throw ProtocolException("connection dropped during pair-verify")
+        conn.enableEncryption(keys.outputKey, keys.inputKey)
+        Trace.step("encryption up")
 
-        optional("system info") { sendSystemInfo(credentials) }
+        // The first encrypted request doubles as the canary. If it goes unanswered the
+        // pairing or the session keys are wrong and nothing later will work either, so fail
+        // here with something legible rather than grinding through six more timeouts.
+        Trace.step("system info")
+        try {
+            sendSystemInfo(credentials)
+        } catch (e: Exception) {
+            throw ProtocolException(
+                "The Apple TV accepted the pairing but ignored our first request " +
+                    "(${e.message}). Try forgetting the device and pairing again.",
+            )
+        }
+
         optional("touch surface") { touchStart() }
+        Trace.step("session start")
         sessionStart()
         optional("tv remote session") { tvRemoteSessionStart() }
         optional("text input") { textInputStart() }
@@ -180,6 +212,7 @@ class CompanionClient(
             subscribe("TVSystemStatus")
         }
         optional("power state") { refreshPowerState() }
+        Trace.step("connected")
     }
 
     private suspend fun optional(step: String, block: suspend () -> Unit) {

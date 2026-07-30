@@ -66,29 +66,60 @@ class CompanionSession(private val connection: CompanionConnection) {
 
     private fun handle(frame: Frame) {
         if (frame.payload.isEmpty()) return
-        val message = runCatching { Opack.unpackMap(frame.payload) }.getOrNull() ?: return
+        val message = try {
+            Opack.unpackMap(frame.payload)
+        } catch (e: Exception) {
+            Trace.problem("could not decode a ${frame.type} frame", e)
+            return
+        }
 
         when (frame.type) {
             FrameType.PairSetupStart, FrameType.PairSetupNext,
             FrameType.PairVerifyStart, FrameType.PairVerifyNext,
-            -> pendingByFrame.remove(frame.type)?.complete(message)
+            -> {
+                val waiting = pendingByFrame.remove(frame.type)
+                if (waiting == null) {
+                    // The handshake replies with the _Next variant of whatever was sent, so
+                    // an unmatched auth frame means the device answered with a type we were
+                    // not expecting — and that is precisely what shows up as a timeout a few
+                    // seconds later.
+                    Trace.unmatched("auth frame ${frame.type}, expected one of $${pendingByFrame.keys}")
+                } else {
+                    waiting.complete(message)
+                }
+            }
 
             FrameType.EncryptedOpack, FrameType.UnencryptedOpack, FrameType.PlainOpack -> {
                 when ((message["_t"] as? Long)) {
                     MessageType.Event.value -> {
-                        val name = message["_i"] as? String ?: return
+                        val name = message["_i"] as? String
+                        if (name == null) {
+                            Trace.unmatched("event with no identifier")
+                            return
+                        }
+                        Trace.event(name)
                         @Suppress("UNCHECKED_CAST")
                         val content = message["_c"] as? Map<String, Any?> ?: emptyMap()
                         onEvent?.invoke(name, content)
                     }
                     else -> {
-                        val xid = message["_x"] as? Long ?: return
-                        pendingByXid.remove(xid)?.complete(message)
+                        val xid = message["_x"] as? Long
+                        Trace.response(message["_i"] as? String, xid)
+                        if (xid == null) {
+                            Trace.unmatched("response with no transaction id: ${message.keys}")
+                            return
+                        }
+                        val waiting = pendingByXid.remove(xid)
+                        if (waiting == null) {
+                            Trace.unmatched("response x=$xid (waiting on ${pendingByXid.keys})")
+                        } else {
+                            waiting.complete(message)
+                        }
                     }
                 }
             }
 
-            else -> Unit
+            else -> Trace.problem("ignoring frame type ${frame.type}")
         }
     }
 
@@ -114,7 +145,7 @@ class CompanionSession(private val connection: CompanionConnection) {
         val deferred = CompletableDeferred<Map<String, Any?>>()
         pendingByFrame[replyType] = deferred
         withContext(Dispatchers.IO) { connection.send(type, Opack.pack(message)) }
-        return awaitReply(deferred, timeoutMs) { pendingByFrame.remove(replyType) }
+        return awaitReply(deferred, timeoutMs, type.name) { pendingByFrame.remove(replyType) }
     }
 
     /** Send a request and await its response, matched on the transaction id. */
@@ -132,8 +163,9 @@ class CompanionSession(private val connection: CompanionConnection) {
             "_c" to content,
             "_x" to xid,
         )
+        Trace.request(identifier, xid)
         withContext(Dispatchers.IO) { connection.send(FrameType.EncryptedOpack, Opack.pack(message)) }
-        val response = awaitReply(deferred, timeoutMs) { pendingByXid.remove(xid) }
+        val response = awaitReply(deferred, timeoutMs, identifier) { pendingByXid.remove(xid) }
         // `_em` is how the device reports "no request handler" for commands a given tvOS
         // version does not implement, which is a normal thing to hit.
         (response["_em"] as? String)?.let { throw ProtocolException("$identifier failed: $it") }
@@ -155,12 +187,16 @@ class CompanionSession(private val connection: CompanionConnection) {
     private suspend fun awaitReply(
         deferred: CompletableDeferred<Map<String, Any?>>,
         timeoutMs: Long,
+        what: String,
         cleanup: () -> Unit,
     ): Map<String, Any?> {
         val result = withTimeoutOrNull(timeoutMs) { deferred.await() }
         if (result == null) {
             cleanup()
-            throw ProtocolException("the Apple TV did not answer in time")
+            // Naming the frame is the difference between a bug report that can be acted on
+            // and one that cannot.
+            Trace.problem("timed out waiting for a reply to $what after ${timeoutMs}ms")
+            throw ProtocolException("no answer to $what")
         }
         return result
     }

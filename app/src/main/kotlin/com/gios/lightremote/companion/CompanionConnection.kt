@@ -101,6 +101,7 @@ class CompanionConnection(private val host: String, private val port: Int) {
         // replayed as a different type.
         if (active != null && payload.isNotEmpty()) body = active.encrypt(payload, aad = header)
 
+        Trace.sent(type, payload.size, active != null && payload.isNotEmpty())
         synchronized(this) {
             stream.write(header)
             stream.write(body)
@@ -120,8 +121,20 @@ class CompanionConnection(private val host: String, private val port: Int) {
         }
         var payload = if (length == 0) ByteArray(0) else (readFully(stream, length) ?: return null)
         val active = cipher
-        if (active != null && payload.isNotEmpty()) payload = active.decrypt(payload, aad = header)
-        return Frame(FrameType.from(header[0].toInt() and 0xFF), payload)
+        val type = FrameType.from(header[0].toInt() and 0xFF)
+        val wasEncrypted = active != null && payload.isNotEmpty()
+        if (wasEncrypted) {
+            // A failure here means the stream counters have diverged, which is unrecoverable
+            // — say so plainly rather than letting it look like a generic read error.
+            payload = try {
+                active!!.decrypt(payload, aad = header)
+            } catch (e: Exception) {
+                Trace.problem("could not decrypt a $type frame; session keys out of step", e)
+                throw e
+            }
+        }
+        Trace.received(type, payload.size, wasEncrypted)
+        return Frame(type, payload)
     }
 
     private fun readFully(stream: InputStream, count: Int): ByteArray? {
