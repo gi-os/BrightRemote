@@ -27,9 +27,13 @@ the obvious next thing to build, not an oversight.
 ## Getting connected
 
 1. TV and phone on the same Wi-Fi.
-2. Open the app; the TV appears under **Found**.
+2. First run opens **Devices**; the TV appears under **Found**.
 3. Tap it, then type the code the TV shows.
-4. It moves to **Paired**. Tap to connect. Long-press a paired device to forget it.
+4. Once paired it connects straight away.
+
+After that the app opens directly onto the remote for the TV you used last. The chevron in
+the top left goes to **Devices** to switch or add one; long-press a paired device to forget
+it. Browsing devices does not drop the connection.
 
 Pairing must be enabled on the TV — Settings > AirPlay and HomeKit. A device with pairing
 switched off is listed but not tappable.
@@ -117,6 +121,15 @@ Things that cost time to work out and are easy to undo by accident:
   reads as a flick and overshoots by several rows.
 - **Text input restarts its session per send.** The `_tiStart` archive is a snapshot, and an
   old session UUID silently targets a field that may be gone.
+- **`_idsID` in `_systemInfo` is the *pairing* identifier**, not the client's own device id.
+  The device checks it against its paired-controller list, so getting it wrong completes the
+  handshake and then fails the first request — which presents as "paired but won't connect".
+- **`_x` belongs on pairing frames too**, even though nothing dispatches on it. A real Apple
+  TV tolerates its absence; the reference client sends it, so this does too.
+- **LazyColumn keys must be unique across the whole list.** Paired and discovered devices are
+  updated by different events, so for an instant after pairing one device can be in both —
+  and an overlapping key is a crash, not a duplicate row. Hence namespaced keys plus a filter
+  at render time.
 
 ## Building
 

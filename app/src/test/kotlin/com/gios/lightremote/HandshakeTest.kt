@@ -209,6 +209,87 @@ class HandshakeTest {
         }
     }
 
+    /**
+     * Regression: pairing frames were going out without `_x`, one entry short of what pyatv
+     * sends. A real Apple TV tolerates it, but "matches the reference client byte for byte"
+     * is the only claim this code can actually make, so hold it to that.
+     */
+    @Test
+    fun `every pairing frame carries a transaction id`() {
+        FakeAppleTv().use { tv ->
+            tv.start()
+            val credentials = withClient { client ->
+                val setup = client.startPairing("127.0.0.1", tv.port)
+                client.finishPairing(setup, "1234")
+            }
+            withClient { client ->
+                client.connect("127.0.0.1", tv.port, credentials)
+                client.disconnect()
+            }
+
+            val frames = synchronized(tv.authFrames) { tv.authFrames.toList() }
+            // Three pair-setup frames plus two pair-verify frames.
+            assertEquals(5, frames.size, "unexpected pairing frame count")
+            frames.forEachIndexed { index, frame ->
+                assertNotNull(frame["_x"], "pairing frame $index has no _x: ${frame.keys}")
+            }
+            // The pair-setup frames also carry the password type, verify frames the auth type.
+            assertEquals(1L, frames[0]["_pwTy"])
+            assertEquals(4L, frames[3]["_auTy"])
+        }
+    }
+
+    /**
+     * Regression: `_idsID` was being sent as the client's own device id instead of the
+     * pairing identifier from the credentials. The device matches that field against its
+     * paired-controller list, so the handshake completed and then the very first request was
+     * rejected — which presents as "it paired but will not connect".
+     */
+    @Test
+    fun `system info identifies us by our pairing id`() {
+        FakeAppleTv().use { tv ->
+            tv.start()
+            val credentials = withClient { client ->
+                val setup = client.startPairing("127.0.0.1", tv.port)
+                client.finishPairing(setup, "1234")
+            }
+            withClient { client ->
+                client.connect("127.0.0.1", tv.port, credentials)
+                client.disconnect()
+            }
+
+            val info = assertNotNull(tv.systemInfo, "no _systemInfo request arrived")
+            val idsId = info["_idsID"] as? ByteArray
+            assertNotNull(idsId, "_idsID missing or not bytes: ${info["_idsID"]}")
+            assertTrue(
+                idsId.contentEquals(credentials.clientId),
+                "_idsID should be the pairing identifier, got ${String(idsId)}",
+            )
+            assertEquals(identity.deviceId, info["_pubID"])
+            assertEquals(identity.plainId, info["_i"])
+        }
+    }
+
+    /** A connection that comes up should report no survivable failures against the fake. */
+    @Test
+    fun `a healthy connection records no warnings`() {
+        FakeAppleTv().use { tv ->
+            tv.start()
+            val credentials = withClient { client ->
+                val setup = client.startPairing("127.0.0.1", tv.port)
+                client.finishPairing(setup, "1234")
+            }
+            withClient { client ->
+                client.connect("127.0.0.1", tv.port, credentials)
+                val warnings = client.connectWarnings.toList()
+                client.disconnect()
+                // TVRCSessionStart is answered with "no request handler" by the fake, and
+                // that one is swallowed inside the step, so it should not show up here.
+                assertTrue(warnings.isEmpty(), "unexpected connect warnings: $warnings")
+            }
+        }
+    }
+
     @Test
     fun `credentials parse rejects malformed input`() {
         assertNull(Credentials.parse("nope"))

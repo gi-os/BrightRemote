@@ -103,9 +103,17 @@ class CompanionSession(private val connection: CompanionConnection) {
             FrameType.PairVerifyStart -> FrameType.PairVerifyNext
             else -> type
         }
+        // Pairing frames carry a transaction id as well, even though nothing dispatches on
+        // it — they are matched by frame type, because the handshake is strictly
+        // sequential. pyatv stamps `_x` onto every outgoing frame including these, and a
+        // real Apple TV does tolerate its absence, but sending a dictionary one entry short
+        // of the reference client is not a difference worth keeping.
+        val message = LinkedHashMap<String, Any?>(content)
+        message["_x"] = synchronized(this) { nextXid++ }
+
         val deferred = CompletableDeferred<Map<String, Any?>>()
         pendingByFrame[replyType] = deferred
-        withContext(Dispatchers.IO) { connection.send(type, Opack.pack(content)) }
+        withContext(Dispatchers.IO) { connection.send(type, Opack.pack(message)) }
         return awaitReply(deferred, timeoutMs) { pendingByFrame.remove(replyType) }
     }
 

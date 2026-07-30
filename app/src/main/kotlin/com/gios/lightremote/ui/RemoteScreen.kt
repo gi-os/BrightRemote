@@ -50,7 +50,7 @@ import com.gios.lightremote.ui.theme.tick
 @Composable
 fun RemoteScreen(
     vm: RemoteViewModel,
-    onBack: () -> Unit,
+    onOpenDevices: () -> Unit,
     onOpenApps: () -> Unit,
     onOpenKeyboard: () -> Unit,
 ) {
@@ -61,8 +61,10 @@ fun RemoteScreen(
         containerColor = LightColors.Background,
         topBar = {
             LightTopBar(
-                title = state.activeName ?: "Remote",
-                onBack = onBack,
+                title = state.activeName ?: "Apple TV",
+                // The chevron goes to the device list rather than out of the app: the
+                // remote is home, so there is nothing behind it to pop to.
+                onBack = onOpenDevices,
                 action = {
                     // Power doubles as the connection indicator: dim when we don't know.
                     Box(
@@ -114,9 +116,20 @@ fun RemoteScreen(
                 ConnectionState.Connecting -> CenteredMessage("Connecting…")
                 ConnectionState.Disconnected -> Column(Modifier.fillMaxSize()) {
                     Box(Modifier.weight(1f)) {
-                        CenteredMessage("Not connected", "Tap Retry to reconnect.")
+                        if (state.activeName == null) {
+                            CenteredMessage(
+                                "No Apple TV paired",
+                                "Open Devices to find one on your network.",
+                            )
+                        } else {
+                            CenteredMessage("Not connected", "Tap Retry to reconnect.")
+                        }
                     }
-                    LightRow(label = "Retry", onClick = { vm.reconnect() })
+                    if (state.activeName != null) {
+                        LightRow(label = "Retry", onClick = { vm.reconnect() })
+                        Rule()
+                    }
+                    LightRow(label = "Devices", onClick = onOpenDevices)
                     Rule()
                 }
                 ConnectionState.Connected -> if (touchpad) {

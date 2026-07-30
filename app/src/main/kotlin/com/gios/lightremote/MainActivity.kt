@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,13 +40,30 @@ class MainActivity : ComponentActivity() {
                 // have no business being URL-encoded into a navigation argument.
                 var managing by remember { mutableStateOf<PairedDevice?>(null) }
 
-                NavHost(nav, startDestination = "devices") {
+                // The remote is home. Opening the app should land on the television, not on
+                // a list with one entry — the device list is a place you visit, not the
+                // front door. With nothing paired yet there is no remote to show, so the
+                // first launch goes straight to discovery instead.
+                var launched by remember { mutableStateOf(false) }
+                LaunchedEffect(Unit) {
+                    if (!launched) {
+                        launched = true
+                        if (!vm.autoConnect()) nav.navigate("devices")
+                    }
+                }
+
+                NavHost(nav, startDestination = "remote") {
                     composable("devices") {
                         DevicesScreen(
                             vm = vm,
+                            onBack = if (vm.hasPairedDevices()) {
+                                { nav.popBackStack("remote", inclusive = false) }
+                            } else {
+                                null
+                            },
                             onOpenRemote = { device ->
                                 vm.connect(device)
-                                nav.navigate("remote")
+                                nav.popBackStack("remote", inclusive = false)
                             },
                             onPair = { device ->
                                 vm.beginPairing(device)
@@ -60,7 +78,12 @@ class MainActivity : ComponentActivity() {
                     composable("pair") {
                         PairScreen(
                             vm = vm,
-                            onPaired = { nav.popBackStack("devices", inclusive = false) },
+                            // Straight to the remote on success — pairing is only ever done
+                            // in order to use the thing.
+                            onPaired = {
+                                vm.autoConnect()
+                                nav.popBackStack("remote", inclusive = false)
+                            },
                             onCancel = { nav.popBackStack("devices", inclusive = false) },
                         )
                     }
@@ -82,10 +105,9 @@ class MainActivity : ComponentActivity() {
                     composable("remote") {
                         RemoteScreen(
                             vm = vm,
-                            onBack = {
-                                vm.disconnect()
-                                nav.popBackStack("devices", inclusive = false)
-                            },
+                            // Keep the connection alive while browsing devices; coming
+                            // straight back should not have cost a reconnect.
+                            onOpenDevices = { nav.navigate("devices") },
                             onOpenApps = { nav.navigate("apps") },
                             onOpenKeyboard = { nav.navigate("keyboard") },
                         )

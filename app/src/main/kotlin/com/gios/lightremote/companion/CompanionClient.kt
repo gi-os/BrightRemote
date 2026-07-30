@@ -152,21 +152,40 @@ class CompanionClient(
         session = sess
     }
 
+    /**
+     * Names of connect steps that failed but were survivable, for diagnostics.
+     */
+    val connectWarnings = mutableListOf<String>()
+
     suspend fun connect(host: String, port: Int, credentials: Credentials) {
         openConnection(host, port)
+        connectWarnings.clear()
         val sess = session!!
+
+        // Pair-verify and the session are the two things that genuinely have to work: one
+        // brings up encryption, the other makes button presses take effect. Everything after
+        // is best-effort — a tvOS version without a handler for one of them should cost that
+        // feature, not the whole connection.
         val keys = CompanionAuth(sess).verify(credentials)
         connection!!.enableEncryption(keys.outputKey, keys.inputKey)
 
-        sendSystemInfo()
-        touchStart()
+        optional("system info") { sendSystemInfo(credentials) }
+        optional("touch surface") { touchStart() }
         sessionStart()
-        tvRemoteSessionStart()
-        runCatching { textInputStart() }
-        subscribe("_iMC")
-        subscribe("SystemStatus")
-        subscribe("TVSystemStatus")
-        runCatching { refreshPowerState() }
+        optional("tv remote session") { tvRemoteSessionStart() }
+        optional("text input") { textInputStart() }
+        optional("subscriptions") {
+            subscribe("_iMC")
+            subscribe("SystemStatus")
+            subscribe("TVSystemStatus")
+        }
+        optional("power state") { refreshPowerState() }
+    }
+
+    private suspend fun optional(step: String, block: suspend () -> Unit) {
+        runCatching { block() }.onFailure { error ->
+            connectWarnings.add("$step: ${error.message ?: error::class.simpleName}")
+        }
     }
 
     fun disconnect() {
@@ -180,7 +199,7 @@ class CompanionClient(
     private fun requireSession(): CompanionSession =
         session ?: throw ProtocolException("not connected to an Apple TV")
 
-    private suspend fun sendSystemInfo() {
+    private suspend fun sendSystemInfo(credentials: Credentials) {
         requireSession().request(
             "_systemInfo",
             linkedMapOf(
@@ -190,7 +209,11 @@ class CompanionClient(
                 // A null here stops the device pushing power-state events, so send a
                 // stable identifier even though the field is nominally optional.
                 "_i" to identity.plainId,
-                "_idsID" to identity.deviceId.toByteArray(Charsets.UTF_8),
+                // This has to be the *pairing* identifier from the credentials, not the
+                // client's own device id. The device matches it against its paired
+                // controller list; send anything else and it answers the handshake and then
+                // rejects this first request, which reads as "paired but cannot connect".
+                "_idsID" to credentials.clientId,
                 "_pubID" to identity.deviceId,
                 "_sf" to 256L,
                 "_sv" to "170.18",

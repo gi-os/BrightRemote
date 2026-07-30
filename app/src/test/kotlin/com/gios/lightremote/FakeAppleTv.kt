@@ -45,6 +45,13 @@ class FakeAppleTv(
     /** Requests seen after encryption came up, in order, for assertions. */
     val requests = mutableListOf<String>()
 
+    /** Every pairing frame received, decoded, so tests can check the envelope. */
+    val authFrames = mutableListOf<Map<String, Any?>>()
+
+    /** Content of the `_systemInfo` request, once it arrives. */
+    var systemInfo: Map<String, Any?>? = null
+        private set
+
     @Volatile
     var failure: Throwable? = null
         private set
@@ -152,8 +159,9 @@ class FakeAppleTv(
 
     private var pendingCipher: ChaChaCipherPair? = null
 
-    private fun handle(type: Int, message: Map<String, Any?>): Pair<Int, Map<String, Any?>>? =
-        when (type) {
+    private fun handle(type: Int, message: Map<String, Any?>): Pair<Int, Map<String, Any?>>? {
+        if (type in 3..6) synchronized(authFrames) { authFrames.add(message) }
+        return when (type) {
             3 -> 4 to pairSetupStart()
             4 -> 4 to pairSetupNext(tlvOf(message))
             5 -> 6 to pairVerifyStart(tlvOf(message))
@@ -161,6 +169,7 @@ class FakeAppleTv(
             8 -> encryptedRequest(message)
             else -> null
         }
+    }
 
     private fun tlvOf(message: Map<String, Any?>): Map<Int, ByteArray> =
         Tlv8.read(message["_pd"] as ByteArray)
@@ -361,6 +370,10 @@ class FakeAppleTv(
         val identifier = message["_i"] as? String ?: return null
         val type = message["_t"] as? Long
         synchronized(requests) { requests.add(identifier) }
+        if (identifier == "_systemInfo") {
+            @Suppress("UNCHECKED_CAST")
+            systemInfo = message["_c"] as? Map<String, Any?>
+        }
         // Events get no reply.
         if (type == 1L) return null
 

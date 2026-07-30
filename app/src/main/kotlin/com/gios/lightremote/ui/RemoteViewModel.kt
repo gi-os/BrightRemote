@@ -184,6 +184,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                         pairingPin = "",
                         pairingBusy = false,
                         paired = prefs.devices(),
+                        // Drop it from "Found" in the same update. Leaving it in both lists
+                        // put the same key in the device list twice, which LazyColumn treats
+                        // as a fatal error rather than a duplicate row.
+                        discovered = _state.value.discovered.filter { it.name != device.name },
                     )
                     onPaired()
                 }
@@ -219,6 +223,11 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                         connection = ConnectionState.Connected,
                         power = client.powerState,
                         controls = client.mediaControlFlags,
+                        // Surfaced rather than swallowed: a step that failed but did not stop
+                        // the connection is exactly the kind of thing that is invisible until
+                        // some button quietly does nothing.
+                        error = client.connectWarnings.takeIf { it.isNotEmpty() }
+                            ?.joinToString("; ", prefix = "Connected, but "),
                     )
                 }
                 .onFailure { error ->
@@ -234,6 +243,22 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         val id = activeDeviceId ?: prefs.lastDeviceId ?: return
         prefs.devices().firstOrNull { it.id == id }?.let { connect(it) }
     }
+
+    /**
+     * Connect to the device used last, or the only paired one.
+     *
+     * @return false when there is nothing paired yet, so the caller can send the user to the
+     *   device list instead of showing an empty remote.
+     */
+    fun autoConnect(): Boolean {
+        val devices = prefs.devices()
+        if (devices.isEmpty()) return false
+        val device = devices.firstOrNull { it.id == prefs.lastDeviceId } ?: devices.first()
+        connect(device)
+        return true
+    }
+
+    fun hasPairedDevices(): Boolean = prefs.devices().isNotEmpty()
 
     fun disconnect() {
         client.disconnect()

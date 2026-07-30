@@ -36,6 +36,8 @@ fun DevicesScreen(
     onOpenRemote: (PairedDevice) -> Unit,
     onPair: (DiscoveredDevice) -> Unit,
     onManage: (PairedDevice) -> Unit,
+    /** Null on first run, when there is no remote to go back to. */
+    onBack: (() -> Unit)? = null,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
 
@@ -46,7 +48,7 @@ fun DevicesScreen(
 
     Scaffold(
         containerColor = LightColors.Background,
-        topBar = { LightTopBar("Apple TV") },
+        topBar = { LightTopBar("Devices", onBack = onBack) },
         bottomBar = {
             LightBottomBar(
                 listOf(
@@ -66,10 +68,18 @@ fun DevicesScreen(
                 return@Column
             }
 
+            // Filtered here as well as in the view model. The two lists are updated by
+            // different events, so for a moment after pairing a device can be in both — and
+            // because LazyColumn keys have to be unique across the *whole* list, an overlap
+            // is a hard crash rather than a cosmetic duplicate. The keys are namespaced for
+            // the same reason.
+            val pairedNames = state.paired.map { it.name }.toSet()
+            val found = state.discovered.filter { it.name !in pairedNames }
+
             LazyColumn(Modifier.fillMaxSize()) {
                 if (state.paired.isNotEmpty()) {
-                    item { SectionLabel("Paired") }
-                    items(state.paired, key = { it.id }) { device ->
+                    item(key = "header-paired") { SectionLabel("Paired") }
+                    items(state.paired, key = { "paired-${it.id}" }) { device ->
                         LightRow(
                             label = device.name,
                             sub = device.host,
@@ -79,9 +89,9 @@ fun DevicesScreen(
                         Rule()
                     }
                 }
-                if (state.discovered.isNotEmpty()) {
-                    item { SectionLabel("Found") }
-                    items(state.discovered, key = { it.name }) { device ->
+                if (found.isNotEmpty()) {
+                    item(key = "header-found") { SectionLabel("Found") }
+                    items(found, key = { "found-${it.name}" }) { device ->
                         LightRow(
                             label = device.name,
                             sub = device.friendlyModel ?: device.host,
@@ -92,7 +102,7 @@ fun DevicesScreen(
                     }
                 }
                 if (state.paired.isNotEmpty()) {
-                    item {
+                    item(key = "footer-hint") {
                         Box(Modifier.fillMaxWidth().padding(vertical = 0.8f.gridDp())) {
                             Text(
                                 "Hold a paired device to forget it",
