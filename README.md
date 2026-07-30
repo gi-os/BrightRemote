@@ -92,11 +92,13 @@ python3 scripts/generate_ui_icons.py --preview /tmp/icons.png
 ### The wheel
 
 Turning the wheel scrolls the **Devices** and **Apps** lists, which are the two screens that
-can run past the bottom of the panel. Nothing exotic is involved: Light relabelled the wheel
-sensor's two scancodes in `/system/usr/keylayout/Generic.kl` and nothing in the system
-intercepts them, so they land in the focused window as ordinary key events. `MainActivity`
-reads them in `dispatchKeyEvent`, which is early enough to win against the focused text field
-on the **Type** screen — otherwise a turn there would type a letter at the TV.
+can run past the bottom of the panel. Nothing exotic is involved, and nothing else has to be
+installed: Light relabelled the wheel sensor's two scancodes in
+`/system/usr/keylayout/Generic.kl` and nothing in the system intercepts them, so they land in
+the focused window as ordinary key events, and this app reads them itself. No service, no
+permission, no root. `MainActivity` takes them in `dispatchKeyEvent`, which is early enough to
+win against the focused text field on the **Type** screen — otherwise a turn there would type
+a letter at the TV.
 
 Notches are paid off a fraction per frame rather than applied as they arrive. The sensor
 fires faster than the display refreshes, so a spin applied notch-by-notch is a stack of jumps
@@ -106,9 +108,8 @@ long version is in
 [LightNews](https://github.com/gi-os/LightNews#the-wheel-and-the-camera-button).
 
 The wheel does not drive the TV. It scrolls this app's own lists and nothing else — a notch is
-a scroll gesture, so mapping it onto D-pad presses would send a burst of them, and the click
-and camera button belong to [LightControl](https://github.com/gi-os/LightControl), which owns
-them across the whole phone.
+a scroll gesture, so mapping it onto D-pad presses would send a burst of them. The click and
+the camera button are not read here either.
 
 The volume rocker *is* forwarded, through the same `dispatchKeyEvent` override and a bus of
 its own. Both halves of the press are swallowed — leaving the UP to Android is what pops its
@@ -119,6 +120,31 @@ would leave the phone's own volume unreachable.
 Haptics need `android.permission.VIBRATE` in the manifest. Without it `Vibrator.vibrate`
 throws a `SecurityException` that the helper swallows, so every button stays silent and
 nothing anywhere explains why.
+
+Giving the rest of the wheel a job is a separate, optional install. With
+[LightControl](https://github.com/gi-os/LightControl), holding the wheel in and turning it
+changes brightness, a tap toggles the flashlight, and the camera button opens the camera — each
+of those rebindable, tap and hold separately, to any installed app. It also lends brightness or
+a synthetic-swipe scroll to apps that don't read the wheel for themselves. It does not take
+this app's scrolling away: bare turns are passed straight through to `com.gios.*` deliberately,
+because a per-notch scroll decided inside the app beats anything a service outside it can fake.
+
+```bash
+# Optional: LightControl, for brightness, the flashlight and the camera button
+adb install -r LightControl-v1.0.x.apk
+
+# The key service. NOTE: this setting is a list, and this command REPLACES it —
+# if you also run LightVoice's push-to-talk, colon-join both components instead.
+adb shell settings put secure enabled_accessibility_services \
+  com.gios.lightcontrol/com.gios.lightcontrol.keys.ControlService
+adb shell settings put secure accessibility_enabled 1
+
+# Brightness, and the level readout + opening apps from the service
+adb shell appops set com.gios.lightcontrol WRITE_SETTINGS allow
+adb shell appops set com.gios.lightcontrol SYSTEM_ALERT_WINDOW allow
+```
+
+Latest APK: <https://github.com/gi-os/LightControl/releases/latest>
 
 ### The protocol layer
 
