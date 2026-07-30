@@ -59,9 +59,11 @@ Five are not, because the set has no equivalent: the D-pad, the trackpad, the 3x
 the keyboard and the power mark. Those come from `scripts/generate_ui_icons.py`, which holds
 the geometry once and can emit a contact sheet rendered at the size the icons are actually
 used — about 24 device pixels — because that is the only size at which it is worth judging
-them. The first trackpad attempt used a curved trail and read as the share arrow; the
-keyboard started with two key rows that merged into a grey band. Both were caught in the
-preview rather than on the phone.
+them. Everything interesting about these was decided there: the trackpad's first drag trail
+was a curve and read as the share arrow, then the fingertip went too because inside a 24px
+box it fought the border rather than explaining it. The keyboard needs *two* rows of keys —
+one row plus a space bar reads as a card — and it needs the case, because bare rows of keys
+(which is what Apple's own glyph uses) blur into a smudge at this scale.
 
 ```
 python3 scripts/generate_ui_icons.py --preview /tmp/icons.png

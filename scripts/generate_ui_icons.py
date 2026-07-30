@@ -100,21 +100,15 @@ def dpad_body() -> list[str]:
 # ---------------------------------------------------------------- trackpad
 # The pad outline with a fingertip and a short trail, so it reads as a surface you drag on
 # rather than as an empty box.
-PAD_BOX = (4.0, 6.5, 26.0, 23.5)
-PAD_RADIUS = 4.0
-PAD_DOT = (18.5, 11.8, 2.6)
-# A straight trail, not a curved one. The first attempt used a quadratic and at two grid
-# units the curl read as the share arrow rather than as a finger being dragged.
-PAD_TRAIL = ((10.0, 19.5), (16.2, 13.6))
+PAD_BOX = (3.5, 6.0, 26.5, 24.0)
+PAD_RADIUS = 4.5
 
 
 def trackpad_body() -> list[str]:
-    (x0, y0), (x1, y1) = PAD_TRAIL
-    return [
-        stroked(rounded_rect(*PAD_BOX, PAD_RADIUS)),
-        stroked(f"M {x0},{y0} L {x1},{y1}", width=1.9),
-        filled(circle(*PAD_DOT)),
-    ]
+    # Just the outline. It carried a fingertip and a drag trail; both went, because next to a
+    # keyboard and an app grid the empty pad is already the odd one out, and whatever sits
+    # inside it at two grid units competes with the border instead of explaining it.
+    return [stroked(rounded_rect(*PAD_BOX, PAD_RADIUS))]
 
 
 # ---------------------------------------------------------------- app grid
@@ -137,26 +131,44 @@ def grid_body() -> list[str]:
 
 
 # ---------------------------------------------------------------- keyboard
-# Case outline, one row of keys, one space bar. Two key rows were tried; at this size the
-# rows sit closer together than the stroke is wide and read as a grey band.
-KB_BOX = (2.5, 8.5, 27.5, 21.5)
+# Case outline, two rows of keys, a space bar.
+#
+# One row plus a space bar came first and read as a card or a wallet at two grid units — the
+# second row is what makes it unmistakably a keyboard. Rows of bare keys with no case were
+# tried too (which is what Apple's own glyph does) and blurred into a smudge at this size;
+# the case is doing real work as an outline around them.
+KB_BOX = (2.0, 8.0, 28.0, 22.0)
 KB_RADIUS = 2.6
-KB_KEY_Y = 12.6
-KB_KEY_H = 2.2
-KB_KEY_W = 2.9
+KB_FIRST_ROW_Y = 11.4
+KB_KEY_H = 2.0
+KB_KEY_W = 2.4
 KB_KEY_GAP = 2.0
-KB_KEYS = 4
-KB_SPACE = (10.0, 17.0, 20.0, 19.2)
+KB_ROW_GAP = 1.6
+KB_ROWS = (5, 4)          # keys per row, top to bottom
+KB_SPACE_W = 9.0
+
+
+def _key_row(count: float, width: float, y: float) -> list[str]:
+    span = count * width + (count - 1) * KB_KEY_GAP
+    origin = (CANVAS - span) / 2
+    return [
+        filled(rect(origin + i * (width + KB_KEY_GAP), y, origin + i * (width + KB_KEY_GAP) + width, y + KB_KEY_H))
+        for i in range(int(count))
+    ]
+
+
+def _row_y(index: int) -> float:
+    return KB_FIRST_ROW_Y + index * (KB_KEY_H + KB_ROW_GAP)
 
 
 def keyboard_body() -> list[str]:
-    span = KB_KEYS * KB_KEY_W + (KB_KEYS - 1) * KB_KEY_GAP
-    origin = (CANVAS - span) / 2
-    keys = []
-    for i in range(KB_KEYS):
-        x = origin + i * (KB_KEY_W + KB_KEY_GAP)
-        keys.append(filled(rect(x, KB_KEY_Y, x + KB_KEY_W, KB_KEY_Y + KB_KEY_H)))
-    return [stroked(rounded_rect(*KB_BOX, KB_RADIUS))] + keys + [filled(rect(*KB_SPACE))]
+    body = [stroked(rounded_rect(*KB_BOX, KB_RADIUS))]
+    for i, count in enumerate(KB_ROWS):
+        body += _key_row(count, KB_KEY_W, _row_y(i))
+    space_y = _row_y(len(KB_ROWS))
+    origin = (CANVAS - KB_SPACE_W) / 2
+    body.append(filled(rect(origin, space_y, origin + KB_SPACE_W, space_y + KB_KEY_H)))
+    return body
 
 
 ICONS = {
@@ -174,10 +186,14 @@ def check_bounds() -> None:
     assert KB_BOX[0] - edge >= 0 and KB_BOX[2] + edge <= CANVAS, "keyboard wider than the canvas"
     c = CANVAS / 2
     assert c - DPAD_REACH >= 0 and c + DPAD_REACH <= CANVAS, "D-pad triangles escape the canvas"
-    # The space bar has to clear the case outline.
-    assert KB_SPACE[3] + edge < KB_BOX[3], "space bar overlaps the keyboard case"
-    # Keys must not touch the case either.
-    assert KB_KEY_Y - edge > KB_BOX[1], "key row overlaps the keyboard case"
+    # Every key row, and the space bar, has to sit clear of the case outline.
+    assert KB_FIRST_ROW_Y - edge > KB_BOX[1], "top key row overlaps the keyboard case"
+    last = _row_y(len(KB_ROWS)) + KB_KEY_H
+    assert last + edge < KB_BOX[3], "space bar overlaps the keyboard case"
+    # And the rows must not merge: a gap narrower than the key height reads as a solid band.
+    assert KB_ROW_GAP >= KB_KEY_H * 0.75, "key rows too close to stay separate"
+    widest = max(KB_ROWS) * KB_KEY_W + (max(KB_ROWS) - 1) * KB_KEY_GAP
+    assert widest + 2 * edge < KB_BOX[2] - KB_BOX[0], "key row wider than the keyboard case"
     span = 3 * GRID_SIZE + 2 * GRID_GAP
     assert span < CANVAS, "app grid wider than the canvas"
 
@@ -226,10 +242,6 @@ def _draw(d, name: str, s: int) -> None:
     elif name == "ic_trackpad_white":
         x0, y0, x1, y1 = (v * s for v in PAD_BOX)
         d.rounded_rectangle([x0, y0, x1, y1], radius=PAD_RADIUS * s, outline=white, width=int(STROKE * s))
-        (tx0, ty0), (tx1, ty1) = PAD_TRAIL
-        d.line([tx0 * s, ty0 * s, tx1 * s, ty1 * s], fill=white, width=int(1.9 * s))
-        cx, cy, r = (v * s for v in PAD_DOT)
-        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=white)
     elif name == "ic_apps_grid_white":
         span = 3 * GRID_SIZE + 2 * GRID_GAP
         o = (CANVAS - span) / 2
@@ -241,13 +253,16 @@ def _draw(d, name: str, s: int) -> None:
     elif name == "ic_keyboard_white":
         x0, y0, x1, y1 = (v * s for v in KB_BOX)
         d.rounded_rectangle([x0, y0, x1, y1], radius=KB_RADIUS * s, outline=white, width=int(STROKE * s))
-        span = KB_KEYS * KB_KEY_W + (KB_KEYS - 1) * KB_KEY_GAP
-        o = (CANVAS - span) / 2
-        for i in range(KB_KEYS):
-            x = (o + i * (KB_KEY_W + KB_KEY_GAP)) * s
-            d.rectangle([x, KB_KEY_Y * s, x + KB_KEY_W * s, (KB_KEY_Y + KB_KEY_H) * s], fill=white)
-        a, b, cc, dd = (v * s for v in KB_SPACE)
-        d.rectangle([a, b, cc, dd], fill=white)
+        for row, count in enumerate(KB_ROWS):
+            span = count * KB_KEY_W + (count - 1) * KB_KEY_GAP
+            o = (CANVAS - span) / 2
+            y = _row_y(row)
+            for i in range(count):
+                x = (o + i * (KB_KEY_W + KB_KEY_GAP)) * s
+                d.rectangle([x, y * s, x + KB_KEY_W * s, (y + KB_KEY_H) * s], fill=white)
+        space_y = _row_y(len(KB_ROWS))
+        o = (CANVAS - KB_SPACE_W) / 2
+        d.rectangle([o * s, space_y * s, (o + KB_SPACE_W) * s, (space_y + KB_KEY_H) * s], fill=white)
 
 
 if __name__ == "__main__":
