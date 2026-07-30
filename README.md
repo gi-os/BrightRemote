@@ -1,160 +1,131 @@
 # LightRemote
 
-An Apple TV remote for the Light Phone III. Launcher label: **Apple TV**.
+Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
+released version: **v1.8.13**; the tracked source is at `1.9.0` pending its release tag.
 
 Speaks Apple's **Companion** protocol directly — mDNS discovery, HAP pairing with the
 four-digit code on screen, then an encrypted session. No server, no bridge, no companion
-app on another device.
+app on another device, no SDK: the Light SDK sandbox has no raw-socket or mDNS access, so
+a protocol client cannot live inside it. This is a plain sideloaded APK, package
+`com.gios.lightremote`, Compose + Material3, single `app/` module, 18.3 MB, arm64 only.
+
+## Why this exists
+
+MRP (the old iOS Remote protocol) was folded into an AirPlay 2 stream in tvOS 15, so a
+current Apple TV only takes standalone control over **Companion**
+(`_companion-link._tcp`, HAP pair-setup, ChaCha20-Poly1305 frames). Companion gives
+buttons, HID touch, power, the app list and text input — it does not carry now-playing
+title or artwork; that needs MRP tunnelled inside a second AirPlay 2 session (binary
+plists, an RTSP-ish setup exchange, two more HAP-verified channels, MRP's own protobuf
+schema). Nothing off-the-shelf on Android speaks Companion, so it was hand-ported to
+Kotlin from [pyatv][pyatv]'s Python implementation — no existing Kotlin client to build
+on, no crypto library pulled in either (see [Protocol layer](#protocol-layer)).
+
+## Quick start
+
+1. `git clone https://github.com/gi-os/LightRemote.git && cd LightRemote`
+2. Grab the signed APK from [Releases](../../releases/latest), or build it:
+   ```
+   ./gradlew :app:assembleRelease
+   ```
+3. `adb install -r app/build/outputs/apk/release/app-release.apk` (or track the repo in
+   Obtainium — every push to `main` cuts a release).
+4. On the phone: TV and phone on the same Wi-Fi, open the app — **Devices** shows the TV
+   under **Found** — tap it, type the on-screen code. Once paired it opens straight to
+   the remote next time.
+
+Pairing must be enabled on the TV (Settings > AirPlay and HomeKit); a device with it off
+is listed but not tappable.
 
 ## What it does
 
-Nearly the whole panel is the thing you touch. **Swipe** to move, **tap** to select — the pad
-has no border and nothing drawn on it, because a remote you glance at while looking at a
-television should not present a dozen targets.
+Nearly the whole panel is the thing you touch. **Swipe** to move, **tap** to select — the
+pad has no border and nothing drawn on it, because a remote you glance at while looking
+at a television should not present a dozen targets.
 
-Three buttons sit along the bottom:
+Three buttons along the bottom, and as of the latest commit **every one of them carries a
+hold**:
 
-- **Back** — tap for back, hold for the menu overlay. tvOS has no separate menu button —
-  holding back is how you get the overlay — so this app does not carry one either.
+- **Back** — tap for back, hold for the menu overlay (tvOS has no separate menu button,
+  so holding back is how you get it).
 - **Home** — tap for home, hold for the app switcher.
-- **More** — tap slides up everything else: play/pause and skip back/forward 15s, then volume
-  down, mute and volume up, then the D-pad/trackpad toggle, apps and the keyboard. The
-  playback buttons dim when the TV reports it has no media controls to offer. **Hold it** to
-  go straight to typing — searching is the one thing you pick the phone up already meaning to
-  do, so it should not be two taps deep.
+- **More** — tap slides up everything else: play/pause and skip ±15s, then volume down,
+  mute and volume up as their own row, then the D-pad/trackpad toggle, apps and the
+  keyboard. Playback buttons dim when the TV reports no media controls. **Hold it** to
+  skip the drawer and jump straight to typing — closing the drawer on the way so the trip
+  back from Type lands on the pad, not on a panel left open behind it. Searching is the
+  one thing you pick the phone up already meaning to do, so it shouldn't be two taps deep.
 
-Mute is volume zero with the previous level remembered, because Companion has no mute command
-— the HID table has volume up and down and nothing else. So it only works on a TV that
-reports volume control at all: where sound leaves over HDMI to a receiver the set often
-refuses `SetVolume`, and that surfaces as an error rather than as silence. Nudging volume by
-hand counts as unmuting.
+**Mute** (added in v1.8.12) is volume zero with the previous level remembered — Companion
+has no mute command, the HID table only has volume up/down. The level is re-read from the
+TV before muting rather than trusted from cache, and nudging volume by hand clears the
+remembered level (an unmute by any reasonable definition). It only works on a TV that
+reports volume control at all — over HDMI to a receiver, a set often refuses `SetVolume`,
+which surfaces as an error rather than silence. Volume down got its own icon in the same
+change: it had been wearing the crossed-out speaker mark, which reads as mute, not
+quieter. The three volume icons are now a generated family — one speaker cone, one wave
+for down, two for up, a cross for mute — so only the part that carries meaning differs.
 
-Also:
+Also: the volume rocker drives the *television*, not the phone, while a TV is connected
+and the remote is on screen; **Power** shows current state by how the icon is lit; **Type**
+sends text to the focused field on the TV; the D-pad is still reachable behind **More**
+for stepping through tile grids. Every button ticks on finger-*down*, not release — eyes
+are on the television, so the press confirms in your hand the instant it lands. Names
+follow tvOS, not the protocol: the HID command Apple calls "Menu" is what tvOS treats as
+back, so it is labelled Back here.
 
-- **The volume rocker drives the television**, not the phone, while a TV is connected and the
-  remote is on screen. Elsewhere in the app the keys do what they normally do.
-- **Power** — sleep and wake, top right, with the current state shown by how the icon is lit.
-- **Apps** — everything launchable, with the ones you use pinned to the top. Hold a row to
-  pin or unpin it.
-- **Type** — send text to the focused search field on the TV.
-- **The D-pad** is still there behind More, for stepping through a grid of tiles.
+**Not implemented:** now-playing title or album art (needs the MRP/AirPlay 2 stack above)
+and a manual-IP fallback if mDNS discovery fails.
 
-Every button ticks the motor on finger-*down*, not on release: your eyes are on the
-television, so the press has to be confirmed in your hand the instant it lands.
-
-Names follow the television rather than the protocol. The HID command Apple calls "Menu" is
-what tvOS treats as *back*, which is why it is labelled Back.
-
-## What it does not do
-
-No now-playing title or album art. Companion carries control but no metadata; that needs
-MRP tunnelled inside an AirPlay 2 session, which is a second protocol stack (binary plists,
-an RTSP-ish setup exchange, two more encrypted channels, and MRP's protobuf schema). It is
-the obvious next thing to build, not an oversight.
-
-## Getting connected
-
-1. TV and phone on the same Wi-Fi.
-2. First run opens **Devices**; the TV appears under **Found**.
-3. Tap it, then type the code the TV shows.
-4. Once paired it connects straight away.
-
-After that the app opens directly onto the remote for the TV you used last. The chevron in
-the top left goes to **Devices** to switch or add one; long-press a paired device to forget
-it. Browsing devices does not drop the connection.
-
-Pairing must be enabled on the TV — Settings > AirPlay and HomeKit. A device with pairing
-switched off is listed but not tappable.
-
-## How it is built
-
-Plain sideloaded APK, single `app/` module, package `com.gios.lightremote`, Compose +
-Material3. Not a Light SDK tool: the SDK sandbox has no raw-socket or mDNS access, so a
-protocol client cannot live inside it.
-
-The LightOS design tokens are ported from [`lightphone/light-sdk`][sdk] (MIT) rather than
-approximated — 27x31 grid, type scale against a 600px vertical baseline, Akkurat pulled from
-`SystemFonts`, no ripples, 45ms haptic on finger-down. Most vector icons in
-`app/src/main/res/drawable/` are the SDK's own.
-
-Five are not, because the set has no equivalent: the D-pad, the trackpad, the 3x3 app grid,
-the keyboard and the power mark. Those come from `scripts/generate_ui_icons.py`, which holds
-the geometry once and can emit a contact sheet rendered at the size the icons are actually
-used — about 24 device pixels — because that is the only size at which it is worth judging
-them. Everything interesting about these was decided there: the trackpad's first drag trail
-was a curve and read as the share arrow, then the fingertip went too because inside a 24px
-box it fought the border rather than explaining it. The keyboard needs *two* rows of keys —
-one row plus a space bar reads as a card — and it needs the case, because bare rows of keys
-(which is what Apple's own glyph uses) blur into a smudge at this scale.
-
-```
-python3 scripts/generate_ui_icons.py --preview /tmp/icons.png
-```
+## Configuration and usage
 
 ### The wheel
 
-Turning the wheel scrolls the **Devices** and **Apps** lists, which are the two screens that
-can run past the bottom of the panel. Nothing exotic is involved, and nothing else has to be
-installed: Light relabelled the wheel sensor's two scancodes in
-`/system/usr/keylayout/Generic.kl` and nothing in the system intercepts them, so they land in
-the focused window as ordinary key events, and this app reads them itself. No service, no
-permission, no root. `MainActivity` takes them in `dispatchKeyEvent`, which is early enough to
-win against the focused text field on the **Type** screen — otherwise a turn there would type
-a letter at the TV.
+Turning the wheel scrolls **Devices** and **Apps** — the two screens that can run past the
+bottom of the panel. LightOS relabels the wheel sensor's two scancodes as `WHEEL_CCW`/
+`WHEEL_CW` in `/system/usr/keylayout/Generic.kl`, and nothing intercepts them, so they
+land in the focused window as ordinary key events. `MainActivity` reads them in
+`dispatchKeyEvent` — early enough to beat the **Type** screen's text field, otherwise a
+turn there would type a letter at the TV. No service, no permission, no root, and
+**nothing else needs installing for this**. Notches are paid off a fraction per frame
+(the sensor fires faster than the display refreshes) and the first notch after a pause
+waits for a second to confirm it, since the wheel sits under a thumb. The wheel does not
+drive the TV itself — a notch is a scroll gesture, not a D-pad press.
 
-Notches are paid off a fraction per frame rather than applied as they arrive. The sensor
-fires faster than the display refreshes, so a spin applied notch-by-notch is a stack of jumps
-instead of a scroll. The first notch after a pause is also held back until a second confirms
-it, because the wheel sits under a thumb and catches stray brushes. Both live in `hw/`; the
-long version is in
-[LightNews](https://github.com/gi-os/LightNews#the-wheel-and-the-camera-button).
+The volume rocker *is* forwarded to the TV, through the same `dispatchKeyEvent` override,
+only while a TV is connected and the remote is the visible screen (otherwise the phone's
+own volume would be unreachable). Both halves of the press are swallowed, since leaving
+the UP to Android pops its own volume panel over the remote.
 
-The wheel does not drive the TV. It scrolls this app's own lists and nothing else — a notch is
-a scroll gesture, so mapping it onto D-pad presses would send a burst of them. The click and
-the camera button are not read here either.
-
-The volume rocker *is* forwarded, through the same `dispatchKeyEvent` override and a bus of
-its own. Both halves of the press are swallowed — leaving the UP to Android is what pops its
-volume panel over the remote — and it is only intercepted while a television is connected and
-the remote is the visible screen, because grabbing the keys for as long as the app is open
-would leave the phone's own volume unreachable.
-
-Haptics need `android.permission.VIBRATE` in the manifest. Without it `Vibrator.vibrate`
-throws a `SecurityException` that the helper swallows, so every button stays silent and
-nothing anywhere explains why.
-
-Giving the rest of the wheel a job is a separate, optional install. With
-[LightControl](https://github.com/gi-os/LightControl), holding the wheel in and turning it
-changes brightness, a tap toggles the flashlight, and the camera button opens the camera — each
-of those rebindable, tap and hold separately, to any installed app. It also lends brightness or
-a synthetic-swipe scroll to apps that don't read the wheel for themselves. It does not take
-this app's scrolling away: bare turns are passed straight through to `com.gios.*` deliberately,
-because a per-notch scroll decided inside the app beats anything a service outside it can fake.
+Optional, separate install for wheel-click and the camera button:
+[LightControl](https://github.com/gi-os/LightControl) gives the rest of the phone
+brightness (hold wheel + turn), flashlight (tap), and camera (camera button), each
+rebindable. It does not take this app's own scrolling away — bare turns pass straight
+through to `com.gios.*`.
 
 ```bash
-# Optional: LightControl, for brightness, the flashlight and the camera button
 adb install -r LightControl-v1.0.x.apk
 
-# The key service. NOTE: this setting is a list, and this command REPLACES it —
-# if you also run LightVoice's push-to-talk, colon-join both components instead.
+# NOTE: this replaces the accessibility-service list — colon-join if you also run
+# LightVoice's push-to-talk.
 adb shell settings put secure enabled_accessibility_services \
   com.gios.lightcontrol/com.gios.lightcontrol.keys.ControlService
 adb shell settings put secure accessibility_enabled 1
 
-# Brightness, and the level readout + opening apps from the service
 adb shell appops set com.gios.lightcontrol WRITE_SETTINGS allow
 adb shell appops set com.gios.lightcontrol SYSTEM_ALERT_WINDOW allow
 ```
 
-Latest APK: <https://github.com/gi-os/LightControl/releases/latest>
+Haptics need `android.permission.VIBRATE`; without it `Vibrator.vibrate` throws a
+`SecurityException` the helper swallows, so every button goes silently mute.
 
-### The protocol layer
+### Protocol layer
 
-Everything under `proto/` and `crypto/` is hand-written with no dependencies:
+Everything under `proto/` and `crypto/` is hand-written, no dependencies:
 
 | Piece | Where |
 | --- | --- |
-| OPACK serialisation, incl. the back-reference table | `proto/Opack.kt` |
+| OPACK serialisation, incl. back-reference table | `proto/Opack.kt` |
 | TLV8 | `proto/Tlv8.kt` |
 | Binary property lists | `proto/BPlist.kt` |
 | NSKeyedArchiver payloads for text input | `proto/RtiPayloads.kt` |
@@ -163,116 +134,145 @@ Everything under `proto/` and `crypto/` is hand-written with no dependencies:
 | ChaCha20-Poly1305 | `crypto/ChaCha20Poly1305.kt` |
 | HKDF-SHA512 | `crypto/Digest.kt` |
 
-No BouncyCastle: it would add roughly 8 MB of APK for the dozen operations one pairing
-performs. Not the platform providers either — `Ed25519` and `XDH` only exist from API 33,
-and their raw-key handling differs between Conscrypt and OpenJDK, which would mean the unit
-tests exercise different code than the phone does.
+No BouncyCastle (≈8 MB for the dozen operations one pairing performs), and not the
+platform `Ed25519`/`XDH` providers either — those only exist from API 33 and differ
+between Conscrypt and OpenJDK, which would mean the unit tests exercise different code
+than the phone does. `Curve25519.kt` is BigInteger-based and **not constant time**;
+measured cost is ~25ms sign / ~20ms verify, and the only secrets are an ephemeral X25519
+key and a long-term Ed25519 key used against a TV on the local network — no remote timing
+oracle here.
 
-`crypto/Curve25519.kt` uses `BigInteger` and is **not constant time**. Measured cost is
-~25ms to sign and ~20ms to verify on a laptop, so a connection spends a fraction of a second
-in crypto. The only secrets are an ephemeral X25519 key and the long-term Ed25519 key, both
-used against a television on the local network; there is no remote timing oracle here.
+### How any of this is verified with no Apple TV in CI
 
-### How any of this is verified
-
-There is no Apple TV in CI, and a wrong byte anywhere in this stack shows up as a device
-that refuses to pair — not as anything visible on screen. So verification is two-layered,
-and both layers gate the build:
+A wrong byte anywhere in this stack shows up only as a device that refuses to pair, never
+as anything visible on screen — so verification is two-layered and both layers gate CI:
 
 1. **Golden vectors.** `scripts/genvec.py` generates
-   `app/src/test/resources/vectors.properties` using the *same libraries pyatv uses*:
-   pyatv's own `opack.py` and `hap_tlv8.py`, `srptools` for SRP, CPython `plistlib` for the
-   text-input payloads, and `cryptography` for HKDF, ChaCha20-Poly1305, Ed25519 and X25519.
-   Matching those bytes means being wire-compatible with a client known to work. The
-   Ed25519 and X25519 vectors reproduce RFC 8032 §7.1 and RFC 7748 §6.1 exactly, which
-   cross-checks the generator itself.
+   `app/src/test/resources/vectors.properties` from *the same libraries pyatv uses*:
+   pyatv's own `opack.py`/`hap_tlv8.py`, `srptools`, CPython `plistlib`, and
+   `cryptography` for HKDF/ChaCha20-Poly1305/Ed25519/X25519. Matching those bytes means
+   being wire-compatible with a client known to work; the Ed25519/X25519 vectors also
+   reproduce RFC 8032 §7.1 and RFC 7748 §6.1 exactly, which cross-checks the generator
+   itself.
+   ```
+   python3 scripts/genvec.py
+   VEC_DEST=app/src/test/resources/vectors.properties python3 scripts/genvec.py
+   ```
+2. **A fake accessory.** `app/src/test/kotlin/com/gios/lightremote/FakeAppleTv.kt`
+   implements the device half of the handshake; `HandshakeTest.kt` drives the *real*
+   client at it over a loopback socket — pair, drop, reconnect with saved credentials,
+   send encrypted commands. This is what catches what vectors can't: which frame type
+   answers which, which HKDF label belongs to which direction, when the ChaCha counters
+   start, and the order the connect sequence has to run in.
 
-2. **A fake accessory.** `FakeAppleTv` implements the device half of the handshake and
-   `HandshakeTest` runs the real client against it over a loopback socket: pair with a PIN,
-   drop the connection, reconnect with the saved credentials, send encrypted commands. This
-   is what catches the mistakes vectors cannot — which frame type answers which, which HKDF
-   label belongs to which direction, when the ChaCha counters start, and the order the
-   connect sequence has to run in.
+Untested on hardware: pairing against a real Apple TV, and whether `NsdManager` needs
+`NEARBY_WIFI_DEVICES` (requested defensively on API 33+).
 
-Regenerate the vectors after cloning pyatv to `/tmp/pyatv`:
+### Wire gotchas worth not relitigating
 
-```
-python3 scripts/genvec.py            # writes vectors.properties next to it
-VEC_DEST=app/src/test/resources/vectors.properties python3 scripts/genvec.py
-```
-
-### Notes from the wire
-
-Things that cost time to work out and are easy to undo by accident:
-
-- **OPACK has no negative integers.** Skip-by-seconds has to go out as a `Double` or it
-  cannot be encoded at all. `Opack.pack` throws with that advice rather than emitting
-  something the TV will reject.
-- **The connect sequence is load-bearing.** `_systemInfo` before anything else or the device
-  never pushes status events; `_sessionStart` before any button or presses do nothing;
-  `TVRCSessionStart` or newer tvOS leaves power queries unanswered. Older tvOS has no
-  handler for that last one, so it is sent tolerantly.
-- **A pairing reply arrives as the `_Next` frame**, never as another `_Start`.
-- **`srptools` serialises integers minimally** — leading zero bytes dropped — everywhere
-  except the two RFC 5054 `PAD()` sites. `Srp.minimalBytes` reproduces that, including the
-  sign byte `BigInteger.toByteArray()` prepends.
-- **Touch samples need throttling.** Roughly one per 16ms; a full stream of pointer events
-  reads as a flick and overshoots by several rows.
-- **Text input restarts its session per send.** The `_tiStart` archive is a snapshot, and an
-  old session UUID silently targets a field that may be gone.
-- **`_idsID` in `_systemInfo` is the *pairing* identifier**, not the client's own device id.
-  The device checks it against its paired-controller list, so getting it wrong completes the
-  handshake and then fails the first request — which presents as "paired but won't connect".
-- **`_x` belongs on pairing frames too**, even though nothing dispatches on it. A real Apple
-  TV tolerates its absence; the reference client sends it, so this does too.
-- **The JVM masks Long shift distances to six bits**, so `counter ushr 64` is `counter ushr 0`,
-  not zero. Building a 12-byte nonce with a loop over the full width therefore stamped a copy
-  of the counter's low byte into byte 8. Counter 0 is all zeros either way, so the *first*
-  encrypted frame of every session worked and every frame after it was dropped by the device
-  without a word — which reads as a TV that stopped answering. Round-trip tests could not see
-  it, because the fake accessory derived its nonces with the same helper and was wrong in the
-  same way. Nonce derivation is now pinned against an independent reference.
-- **LazyColumn keys must be unique across the whole list.** Paired and discovered devices are
-  updated by different events, so for an instant after pairing one device can be in both —
-  and an overlapping key is a crash, not a duplicate row. Hence namespaced keys plus a filter
-  at render time.
+- **OPACK has no negative integers** — skip-by-seconds must be a `Double`.
+- **The connect sequence is load-bearing**: `_systemInfo` first or no status events;
+  `_sessionStart` before any button or presses do nothing; newer tvOS leaves
+  `TVRCSessionStart` power queries unanswered (older tvOS has no handler at all, so it's
+  sent tolerantly).
+- A pairing reply arrives as the `_Next` frame, never another `_Start`.
+- `srptools` serialises integers minimally (leading zero bytes dropped) except the two
+  RFC 5054 `PAD()` sites — `Srp.minimalBytes` reproduces that exactly.
+- Touch samples need ~16ms throttling or a full stream reads as a flick.
+- `_idsID` in `_systemInfo` is the *pairing* identifier, not the client's device id —
+  getting it wrong completes the handshake and fails the first request, which presents as
+  "paired but won't connect."
+- The JVM masks `Long` shift distances to six bits, so `counter ushr 64` is
+  `counter ushr 0`, not zero — a 12-byte nonce built with a full-width shift stamped a
+  copy of the counter's low byte into byte 8. Counter 0 (the first frame of a session)
+  worked either way, so every session's *first* frame succeeded and everything after it
+  was silently dropped. The fake accessory used the same buggy helper, so round-trip
+  tests didn't catch it either; nonce derivation is now pinned against an independent
+  reference.
+- Only `.xml`/`.png` may live under `res/` — an attribution `README.md` in
+  `res/drawable/` failed `mergeDebugResources`.
 
 ## When something goes wrong
 
-The link is encrypted after pair-verify and there is no way to watch it from outside, so the
-app narrates itself:
+The link is encrypted after pair-verify and can't be watched from outside, so the app
+narrates itself:
 
 ```
 adb logcat -s LightRemote
 ```
 
-Every frame in and out (type, length, whether it was encrypted), every request with its
-transaction id, and every connect step. Payload bytes are deliberately never logged — they
-carry the pairing and session keys.
-
-Two lines matter most:
-
-- `!! unmatched …` — the device answered with a frame or transaction id nobody was waiting
-  for. This is what becomes a timeout a few seconds later, and it says whether the TV replied
-  with something unexpected or never replied at all.
-- `!! could not decrypt a … frame; session keys out of step` — the two ends disagree about the
-  ChaCha counters. Unrecoverable; reconnect.
-
-Timeouts name the frame they were waiting for (`no answer to _sessionStart`) rather than
-saying only that something timed out.
+Every frame in/out (type, length, whether encrypted), every request's transaction id, and
+every connect step — payload bytes are never logged, since they carry the pairing and
+session keys. `!! unmatched …` means the device answered a frame/transaction id nobody was
+waiting for (becomes a timeout); `!! could not decrypt …` means the ChaCha counters are out
+of step and the session is unrecoverable — reconnect. Timeouts name the frame they were
+waiting for (`no answer to _sessionStart`) rather than saying only that something timed
+out.
 
 ## Building
 
-Requires JDK 17 and the Android SDK. CI (`.github/workflows/build.yml`) runs the tests,
-builds a signed release APK, checks the signing certificate against
-`signing-fingerprint.txt`, verifies the package declares a launcher icon, and publishes one
-GitHub Release asset per push to `main`.
+Requires JDK 17 and the Android SDK. CI (`.github/workflows/build.yml`) runs the unit
+tests (45 tests, ~22s), builds a signed release APK, checks the signing certificate
+against `signing-fingerprint.txt`, verifies a launcher icon is declared, and publishes one
+GitHub Release per push to `main` — **a push is a release, not a cosmetic action**. The
+keystore is committed at `keystore/lightremote.jks` on purpose: a stable certificate is
+what lets `adb install -r` upgrade in place and keeps Obtainium updates from failing with
+an opaque `Failure: Invalid`.
 
-The keystore is committed at `keystore/lightremote.jks` on purpose: every build has to carry
-one stable certificate or Obtainium updates fail with an opaque `Failure: Invalid`.
+The release tag is `v<versionName>.<run>` — CI derives `<run>` from the workflow run
+number and stamps it into `app/build.gradle.kts` at build time (not committed back).
+**Bump the `major.minor` base of `versionName` in the tracked source** when a change
+warrants it; the run number alone keeps every tag unique even without a bump.
 
-**Bump `versionName` when pushing.** The release workflow tags `v${versionName}.${run}`, so
-the run number keeps tags unique — but keep the base version moving as features land.
+The five bottom-bar icons with no SDK equivalent (D-pad, trackpad, 3x3 app grid,
+keyboard, power) come from `scripts/generate_ui_icons.py`, which holds the geometry once
+and renders a contact sheet at the size they're actually used — about 24 device pixels,
+the only size worth judging them at:
+
+```
+python3 scripts/generate_ui_icons.py --preview /tmp/icons.png
+```
+
+Everything else visual is ported from [`lightphone/light-sdk`][sdk] rather than
+approximated: 27x31 grid, type scale against a 600px vertical baseline, Akkurat from
+`SystemFonts`, no ripples, 45ms haptic on finger-down.
+
+## Contributing
+
+Issues and PRs welcome. Before sending a change:
+
+- `./gradlew :app:testDebugUnitTest` — the protocol layer is the whole app and none of it
+  is checkable by eye; a wrong byte in OPACK, SRP, ChaCha20-Poly1305, Ed25519 or the plist
+  writer shows up only as a TV that refuses to pair, so these tests gate CI and should
+  gate a PR too.
+- If you touch anything under `proto/` or `crypto/`, regenerate the golden vectors
+  (`python3 scripts/genvec.py`) against a freshly cloned `pyatv` and confirm
+  `HandshakeTest` still passes — that's the only way to be sure a change is still
+  wire-compatible with no Apple TV on hand.
+- Keep `res/` to `.xml`/`.png` only (see the wire gotchas above).
+- CI publishes a release on every push to `main` — verify locally before pushing there.
+
+## Version history
+
+Tags are `v<major.minor>.<CI run number>`; the base only moves when the source is bumped,
+so consecutive tags can share a `major.minor` across several unrelated changes.
+
+| Version | Change |
+| --- | --- |
+| *(pending)* | Hold More to jump straight to typing — every bottom-bar button now has a hold action (source bumped to `1.9.0`) |
+| v1.8.13 | Answer whether the wheel needs anything else installed (docs) |
+| v1.8.12 | Add mute, and give volume down its own icon |
+| v1.7.11 | Make the bars opaque so the drawer slides behind them |
+| v1.7.10 | Empty the remote out: pad, three buttons, everything else in a drawer |
+| v1.6.9 | Two rows of keys on the keyboard, and empty the trackpad |
+| v1.5.8 | Custom bottom-bar icons: D-pad, trackpad, app grid, keyboard |
+| v1.4.7 | Rework the remote face: icon bar, real power icon, pinned apps |
+| v1.3.6 | Scroll the device and app lists with the hardware wheel |
+| v1.3.5 | Fix the session nonce, which broke every frame after the first |
+| v1.2.4 | Make the link traceable, and stop a stale reader killing a live connection |
+| v1.1.3 | Fix the crash on pairing, the failure to connect, and open on the remote |
+| v1.0.2 | Drop the attribution note out of res/drawable |
+| — | Apple TV remote over the Companion protocol (initial commit) |
 
 ## Licence
 
