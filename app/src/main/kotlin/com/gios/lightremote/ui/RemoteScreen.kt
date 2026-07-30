@@ -99,14 +99,14 @@ fun RemoteScreen(
                     BarIcon(
                         // Shows what you would switch *to*, which is the convention the rest
                         // of LightOS follows for a toggle.
-                        icon = if (touchpad) R.drawable.ic_dialpad_white else R.drawable.ic_crosshair_white,
+                        icon = if (touchpad) R.drawable.ic_dpad_white else R.drawable.ic_trackpad_white,
                         label = if (touchpad) "Switch to D-pad" else "Switch to trackpad",
                     ) {
                         touchpad = !touchpad
                         vm.preferTouchpad = touchpad
                     },
-                    BarIcon(R.drawable.ic_list_white, "Apps", enabled = live) { onOpenApps() },
-                    BarIcon(R.drawable.ic_compose_white, "Type", enabled = live) { onOpenKeyboard() },
+                    BarIcon(R.drawable.ic_apps_grid_white, "Apps", enabled = live) { onOpenApps() },
+                    BarIcon(R.drawable.ic_keyboard_white, "Type", enabled = live) { onOpenKeyboard() },
                 ),
             )
         },

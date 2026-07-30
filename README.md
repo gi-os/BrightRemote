@@ -52,8 +52,20 @@ protocol client cannot live inside it.
 
 The LightOS design tokens are ported from [`lightphone/light-sdk`][sdk] (MIT) rather than
 approximated — 27x31 grid, type scale against a 600px vertical baseline, Akkurat pulled from
-`SystemFonts`, no ripples, 45ms haptic on finger-down. The vector icons in
-`app/src/main/res/drawable/ic_*_white.xml` are the SDK's own.
+`SystemFonts`, no ripples, 45ms haptic on finger-down. Most vector icons in
+`app/src/main/res/drawable/` are the SDK's own.
+
+Five are not, because the set has no equivalent: the D-pad, the trackpad, the 3x3 app grid,
+the keyboard and the power mark. Those come from `scripts/generate_ui_icons.py`, which holds
+the geometry once and can emit a contact sheet rendered at the size the icons are actually
+used — about 24 device pixels — because that is the only size at which it is worth judging
+them. The first trackpad attempt used a curved trail and read as the share arrow; the
+keyboard started with two key rows that merged into a grey band. Both were caught in the
+preview rather than on the phone.
+
+```
+python3 scripts/generate_ui_icons.py --preview /tmp/icons.png
+```
 
 ### The wheel
 
