@@ -96,6 +96,65 @@ class CryptoTest {
         assertEquals("three", String(server.decrypt(d)))
     }
 
+    /**
+     * Regression, and the most expensive bug in this codebase so far.
+     *
+     * The counter-to-nonce loop ran to the full nonce width, but the JVM masks Long shift
+     * distances to six bits, so `counter ushr 64` is `counter ushr 0` rather than zero and
+     * byte 8 got a copy of the counter's low byte. Counter 0 is all zeros either way, so the
+     * first encrypted frame of every session worked and every frame after it was silently
+     * dropped by the Apple TV — which looks exactly like a device that has stopped answering.
+     *
+     * The existing tests could not catch it: the fake accessory derives its nonces with the
+     * same helper, so both ends were wrong identically and agreed with each other. Hence the
+     * independent reference below rather than a round trip.
+     */
+    @Test
+    fun `cipher pair derives twelve byte little-endian counter nonces`() {
+        val key = ByteArray(32) { (it * 5 + 1).toByte() }
+        val pair = ChaChaCipherPair(key, key, nonceLength = 12)
+        val plaintext = "frame".toByteArray()
+
+        for (counter in 0L until 6L) {
+            val produced = pair.encrypt(plaintext)
+            assertEquals(
+                Vectors.encodeHex(
+                    ChaCha20Poly1305.encrypt(key, referenceNonce(counter, 12), plaintext),
+                ),
+                Vectors.encodeHex(produced),
+                "counter $counter",
+            )
+        }
+    }
+
+    /** The eight-byte pairing variant pads on the left, which is a different layout again. */
+    @Test
+    fun `pairing cipher pads an eight byte counter on the left`() {
+        val key = ByteArray(32) { (it * 3).toByte() }
+        val pair = ChaChaCipherPair(key, key, nonceLength = 8)
+        val plaintext = "tlv".toByteArray()
+
+        for (counter in 0L until 4L) {
+            val expected = ByteArray(4) + referenceNonce(counter, 8)
+            assertEquals(
+                Vectors.encodeHex(ChaCha20Poly1305.encrypt(key, expected, plaintext)),
+                Vectors.encodeHex(pair.encrypt(plaintext)),
+                "counter $counter",
+            )
+        }
+    }
+
+    /** Little-endian counter, written without any shift wide enough to wrap. */
+    private fun referenceNonce(counter: Long, width: Int): ByteArray {
+        val out = ByteArray(width)
+        var remaining = counter
+        for (i in 0 until minOf(width, 8)) {
+            out[i] = (remaining and 0xFF).toByte()
+            remaining = remaining ushr 8
+        }
+        return out
+    }
+
     @Test
     fun `explicit nonce does not advance the counter`() {
         val key = ByteArray(32) { 9 }

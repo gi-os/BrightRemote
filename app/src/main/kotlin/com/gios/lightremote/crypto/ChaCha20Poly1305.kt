@@ -179,7 +179,14 @@ class ChaChaCipherPair(
 
     private fun counterNonce(counter: Long): ByteArray {
         val raw = ByteArray(nonceLength)
-        for (i in 0 until nonceLength) raw[i] = ((counter ushr (8 * i)) and 0xFF).toByte()
+        // Only the first eight bytes can carry a Long, and the loop must stop there. The JVM
+        // masks Long shift distances to six bits, so `counter ushr 64` is `counter ushr 0`,
+        // not zero — writing byte 8 from the loop stamped a copy of the counter's low byte
+        // into the middle of the nonce. Counter 0 is all zeros either way, which is why the
+        // first encrypted frame of a session worked and every one after it was silently
+        // dropped by the device.
+        val carried = minOf(nonceLength, 8)
+        for (i in 0 until carried) raw[i] = ((counter ushr (8 * i)) and 0xFF).toByte()
         return padNonce(raw)
     }
 

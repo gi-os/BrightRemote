@@ -126,6 +126,13 @@ Things that cost time to work out and are easy to undo by accident:
   handshake and then fails the first request — which presents as "paired but won't connect".
 - **`_x` belongs on pairing frames too**, even though nothing dispatches on it. A real Apple
   TV tolerates its absence; the reference client sends it, so this does too.
+- **The JVM masks Long shift distances to six bits**, so `counter ushr 64` is `counter ushr 0`,
+  not zero. Building a 12-byte nonce with a loop over the full width therefore stamped a copy
+  of the counter's low byte into byte 8. Counter 0 is all zeros either way, so the *first*
+  encrypted frame of every session worked and every frame after it was dropped by the device
+  without a word — which reads as a TV that stopped answering. Round-trip tests could not see
+  it, because the fake accessory derived its nonces with the same helper and was wrong in the
+  same way. Nonce derivation is now pinned against an independent reference.
 - **LazyColumn keys must be unique across the whole list.** Paired and discovered devices are
   updated by different events, so for an instant after pairing one device can be in both —
   and an overlapping key is a crash, not a duplicate row. Hence namespaced keys plus a filter
