@@ -49,6 +49,27 @@ approximated — 27x31 grid, type scale against a 600px vertical baseline, Akkur
 `SystemFonts`, no ripples, 45ms haptic on finger-down. The vector icons in
 `app/src/main/res/drawable/ic_*_white.xml` are the SDK's own.
 
+### The wheel
+
+Turning the wheel scrolls the **Devices** and **Apps** lists, which are the two screens that
+can run past the bottom of the panel. Nothing exotic is involved: Light relabelled the wheel
+sensor's two scancodes in `/system/usr/keylayout/Generic.kl` and nothing in the system
+intercepts them, so they land in the focused window as ordinary key events. `MainActivity`
+reads them in `dispatchKeyEvent`, which is early enough to win against the focused text field
+on the **Type** screen — otherwise a turn there would type a letter at the TV.
+
+Notches are paid off a fraction per frame rather than applied as they arrive. The sensor
+fires faster than the display refreshes, so a spin applied notch-by-notch is a stack of jumps
+instead of a scroll. The first notch after a pause is also held back until a second confirms
+it, because the wheel sits under a thumb and catches stray brushes. Both live in `hw/`; the
+long version is in
+[LightNews](https://github.com/gi-os/LightNews#the-wheel-and-the-camera-button).
+
+The wheel does not drive the TV. It scrolls this app's own lists and nothing else — a notch is
+a scroll gesture, so mapping it onto D-pad presses would send a burst of them, and the click
+and camera button belong to [LightControl](https://github.com/gi-os/LightControl), which owns
+them across the whole phone.
+
 ### The protocol layer
 
 Everything under `proto/` and `crypto/` is hand-written with no dependencies:

@@ -4,8 +4,10 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -16,6 +18,10 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.gios.lightremote.data.PairedDevice
+import com.gios.lightremote.hw.LightKey
+import com.gios.lightremote.hw.LightKeys
+import com.gios.lightremote.hw.LocalWheelBus
+import com.gios.lightremote.hw.WheelBus
 import com.gios.lightremote.ui.AppsScreen
 import com.gios.lightremote.ui.DevicesScreen
 import com.gios.lightremote.ui.ForgetDeviceScreen
@@ -26,6 +32,31 @@ import com.gios.lightremote.ui.RemoteViewModel
 import com.gios.lightremote.ui.theme.LightRemoteTheme
 
 class MainActivity : ComponentActivity() {
+
+    /** Wheel notches on their way to whichever screen is up. */
+    private val wheel = WheelBus()
+
+    /**
+     * Every hardware key arrives here first — `DecorView` calls the window callback before
+     * it walks the view hierarchy — so the wheel is read before the focused text field on
+     * the Type screen can take it as a letter. Both halves of a notch are consumed: one
+     * notch is a complete DOWN+UP pair, and the UP would otherwise arrive as a keypress.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        when (LightKeys.of(event)) {
+            LightKey.WheelUp -> {
+                if (event.action == KeyEvent.ACTION_DOWN) wheel.send(1)
+                return true
+            }
+            LightKey.WheelDown -> {
+                if (event.action == KeyEvent.ACTION_DOWN) wheel.send(-1)
+                return true
+            }
+            else -> Unit
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -52,71 +83,73 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                NavHost(nav, startDestination = "remote") {
-                    composable("devices") {
-                        DevicesScreen(
-                            vm = vm,
-                            onBack = if (vm.hasPairedDevices()) {
-                                { nav.popBackStack("remote", inclusive = false) }
-                            } else {
-                                null
-                            },
-                            onOpenRemote = { device ->
-                                vm.connect(device)
-                                nav.popBackStack("remote", inclusive = false)
-                            },
-                            onPair = { device ->
-                                vm.beginPairing(device)
-                                nav.navigate("pair")
-                            },
-                            onManage = { device ->
-                                managing = device
-                                nav.navigate("forget")
-                            },
-                        )
-                    }
-                    composable("pair") {
-                        PairScreen(
-                            vm = vm,
-                            // Straight to the remote on success — pairing is only ever done
-                            // in order to use the thing.
-                            onPaired = {
-                                vm.autoConnect()
-                                nav.popBackStack("remote", inclusive = false)
-                            },
-                            onCancel = { nav.popBackStack("devices", inclusive = false) },
-                        )
-                    }
-                    composable("forget") {
-                        val device = managing
-                        if (device == null) {
-                            nav.popBackStack("devices", inclusive = false)
-                        } else {
-                            ForgetDeviceScreen(
+                CompositionLocalProvider(LocalWheelBus provides wheel) {
+                    NavHost(nav, startDestination = "remote") {
+                        composable("devices") {
+                            DevicesScreen(
                                 vm = vm,
-                                device = device,
-                                onDone = {
-                                    managing = null
-                                    nav.popBackStack("devices", inclusive = false)
+                                onBack = if (vm.hasPairedDevices()) {
+                                    { nav.popBackStack("remote", inclusive = false) }
+                                } else {
+                                    null
+                                },
+                                onOpenRemote = { device ->
+                                    vm.connect(device)
+                                    nav.popBackStack("remote", inclusive = false)
+                                },
+                                onPair = { device ->
+                                    vm.beginPairing(device)
+                                    nav.navigate("pair")
+                                },
+                                onManage = { device ->
+                                    managing = device
+                                    nav.navigate("forget")
                                 },
                             )
                         }
-                    }
-                    composable("remote") {
-                        RemoteScreen(
-                            vm = vm,
-                            // Keep the connection alive while browsing devices; coming
-                            // straight back should not have cost a reconnect.
-                            onOpenDevices = { nav.navigate("devices") },
-                            onOpenApps = { nav.navigate("apps") },
-                            onOpenKeyboard = { nav.navigate("keyboard") },
-                        )
-                    }
-                    composable("apps") {
-                        AppsScreen(vm = vm, onBack = { nav.popBackStack() })
-                    }
-                    composable("keyboard") {
-                        KeyboardScreen(vm = vm, onBack = { nav.popBackStack() })
+                        composable("pair") {
+                            PairScreen(
+                                vm = vm,
+                                // Straight to the remote on success — pairing is only ever done
+                                // in order to use the thing.
+                                onPaired = {
+                                    vm.autoConnect()
+                                    nav.popBackStack("remote", inclusive = false)
+                                },
+                                onCancel = { nav.popBackStack("devices", inclusive = false) },
+                            )
+                        }
+                        composable("forget") {
+                            val device = managing
+                            if (device == null) {
+                                nav.popBackStack("devices", inclusive = false)
+                            } else {
+                                ForgetDeviceScreen(
+                                    vm = vm,
+                                    device = device,
+                                    onDone = {
+                                        managing = null
+                                        nav.popBackStack("devices", inclusive = false)
+                                    },
+                                )
+                            }
+                        }
+                        composable("remote") {
+                            RemoteScreen(
+                                vm = vm,
+                                // Keep the connection alive while browsing devices; coming
+                                // straight back should not have cost a reconnect.
+                                onOpenDevices = { nav.navigate("devices") },
+                                onOpenApps = { nav.navigate("apps") },
+                                onOpenKeyboard = { nav.navigate("keyboard") },
+                            )
+                        }
+                        composable("apps") {
+                            AppsScreen(vm = vm, onBack = { nav.popBackStack() })
+                        }
+                        composable("keyboard") {
+                            KeyboardScreen(vm = vm, onBack = { nav.popBackStack() })
+                        }
                     }
                 }
             }

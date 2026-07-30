@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -19,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gios.lightremote.data.PairedDevice
 import com.gios.lightremote.discovery.DiscoveredDevice
+import com.gios.lightremote.hw.WheelScroll
 import com.gios.lightremote.ui.theme.LightColors
 import com.gios.lightremote.ui.theme.LightGrid
 import com.gios.lightremote.ui.theme.gridDp
@@ -45,6 +47,11 @@ fun DevicesScreen(
         vm.startDiscovery()
         onDispose { vm.stopDiscovery() }
     }
+
+    // Paired plus everything answering on the network runs past the bottom of the panel on
+    // a busy Wi-Fi, so the wheel scrolls it.
+    val listState = rememberLazyListState()
+    WheelScroll(listState)
 
     Scaffold(
         containerColor = LightColors.Background,
@@ -76,7 +83,7 @@ fun DevicesScreen(
             val pairedNames = state.paired.map { it.name }.toSet()
             val found = state.discovered.filter { it.name !in pairedNames }
 
-            LazyColumn(Modifier.fillMaxSize()) {
+            LazyColumn(Modifier.fillMaxSize(), state = listState) {
                 if (state.paired.isNotEmpty()) {
                     item(key = "header-paired") { SectionLabel("Paired") }
                     items(state.paired, key = { "paired-${it.id}" }) { device ->
