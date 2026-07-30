@@ -8,14 +8,20 @@ app on another device.
 
 ## What it does
 
-- **D-pad** — up/down/left/right, select, menu, home, control centre. Menu and Home
-  respond to a hold as well as a tap.
+- **D-pad** — up/down/left/right and select.
 - **Swipe pad** — a trackpad mapped onto the TV's 1000x1000 touch surface, tap to select.
+- **Back / Menu / Home** on both faces. Back and Home also respond to a hold: holding Back
+  jumps to the home screen, holding Home opens the app switcher.
 - **Transport** — play/pause, skip back and forward 15s, volume up and down. The playback
   buttons dim when the TV reports it has no media controls to offer.
-- **Power** — sleep and wake, with the current state shown in the top bar.
-- **Apps** — list everything launchable and open one by name.
+- **Power** — sleep and wake, with the current state shown by how the icon is lit.
+- **Apps** — everything launchable, with the ones you use pinned to the top. Hold a row to
+  pin or unpin it.
 - **Type** — send text to the focused search field on the TV.
+
+The names follow the television rather than the protocol. The HID command Apple calls "Menu"
+is what tvOS treats as *back*, so it is labelled Back; what sits behind "Menu" here is the
+control-centre overlay, which is the menu a modern Apple TV actually shows.
 
 ## What it does not do
 

@@ -101,10 +101,25 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean(KEY_PREFER_TOUCHPAD, false)
         set(value) = prefs.edit().putBoolean(KEY_PREFER_TOUCHPAD, value).apply()
 
+    /**
+     * Bundle ids pinned to the top of the app list.
+     *
+     * Kept per install rather than per device: the handful of apps worth pinning are the ones
+     * *you* watch, and they are the same on every TV in the house.
+     */
+    fun pinnedApps(): Set<String> = prefs.getStringSet(KEY_PINNED, emptySet()) ?: emptySet()
+
+    fun togglePin(bundleId: String) {
+        val pinned = pinnedApps().toMutableSet()
+        if (!pinned.add(bundleId)) pinned.remove(bundleId)
+        prefs.edit().putStringSet(KEY_PINNED, pinned).apply()
+    }
+
     private companion object {
         const val KEY_DEVICE_ID = "client.device_id"
         const val KEY_DEVICE_IDS = "devices"
         const val KEY_LAST_DEVICE = "last_device"
         const val KEY_PREFER_TOUCHPAD = "prefer_touchpad"
+        const val KEY_PINNED = "pinned_apps"
     }
 }

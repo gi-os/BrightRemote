@@ -36,7 +36,8 @@ import com.gios.lightremote.ui.theme.lightClickable
  */
 @Composable
 fun LightTopBar(
-    title: String,
+    /** Null on the remote itself, where the screen is short and the title says nothing. */
+    title: String?,
     onBack: (() -> Unit)? = null,
     action: (@Composable () -> Unit)? = null,
 ) {
@@ -63,16 +64,18 @@ fun LightTopBar(
                     )
                 }
             }
-            Text(
-                title,
-                style = MaterialTheme.typography.labelMedium,
-                color = LightColors.Content,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 3f.gridDp()),
-            )
+            if (title != null) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = LightColors.Content,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 3f.gridDp()),
+                )
+            }
             if (action != null) {
                 Box(
                     Modifier
@@ -133,6 +136,55 @@ fun LightBottomBar(actions: List<BarAction>) {
                         style = MaterialTheme.typography.labelLarge,
                         color = if (action.enabled) LightColors.Content else LightColors.Faint,
                         maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+data class BarIcon(
+    @androidx.annotation.DrawableRes val icon: Int,
+    val label: String,
+    val enabled: Boolean = true,
+    val onClick: () -> Unit,
+)
+
+/**
+ * The icon form of the bottom bar.
+ *
+ * LightOS allows up to five icon items but only three once any item is text, which is why the
+ * remote's bar is icons: it needs more than three places to go. [label] is the accessibility
+ * description only — nothing is drawn.
+ *
+ * Not an overload of [LightBottomBar]: generics erase, so both would compile to the same JVM
+ * signature.
+ */
+@Composable
+fun LightIconBar(icons: List<BarIcon>) {
+    require(icons.size <= 5) { "LightOS allows at most five icon items in a bottom bar" }
+    Column {
+        Rule()
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(LightGrid.BOTTOM_BAR_UNITS.gridDp()),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            icons.forEach { item ->
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .lightClickable(enabled = item.enabled, onClick = item.onClick),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        painterResource(item.icon),
+                        contentDescription = item.label,
+                        tint = if (item.enabled) LightColors.Content else LightColors.Faint,
+                        modifier = Modifier.size(LightGrid.BAR_ICON_UNITS.gridDp()),
                     )
                 }
             }

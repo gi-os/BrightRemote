@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -28,7 +27,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gios.lightremote.R
@@ -61,12 +59,16 @@ fun RemoteScreen(
         containerColor = LightColors.Background,
         topBar = {
             LightTopBar(
-                title = state.activeName ?: "Apple TV",
+                // No title: the panel is short, and the device name is not worth three grid
+                // units when the chevron already leads to the list that names it.
+                title = null,
                 // The chevron goes to the device list rather than out of the app: the
                 // remote is home, so there is nothing behind it to pop to.
                 onBack = onOpenDevices,
                 action = {
-                    // Power doubles as the connection indicator: dim when we don't know.
+                    // Power doubles as the connection indicator: dim when we don't know. The
+                    // glyph used to be "⏻", which Akkurat has no character for, so the button
+                    // rendered as nothing at all.
                     Box(
                         Modifier
                             .size(LightGrid.BAR_ICON_UNITS.gridDp())
@@ -75,32 +77,36 @@ fun RemoteScreen(
                             ) { vm.togglePower() },
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(
-                            "⏻",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = when (state.power) {
-                                PowerState.On -> LightColors.Content
-                                PowerState.Screensaver -> LightColors.ContentSecondary
+                        Icon(
+                            painterResource(R.drawable.ic_power_white),
+                            contentDescription = "Power",
+                            tint = when {
+                                state.connection != ConnectionState.Connected -> LightColors.Faint
+                                state.power == PowerState.On -> LightColors.Content
+                                state.power == PowerState.Screensaver -> LightColors.ContentSecondary
                                 else -> LightColors.Faint
                             },
+                            modifier = Modifier.size(LightGrid.BAR_ICON_UNITS.gridDp()),
                         )
                     }
                 },
             )
         },
         bottomBar = {
-            LightBottomBar(
+            val live = state.connection == ConnectionState.Connected
+            LightIconBar(
                 listOf(
-                    BarAction(if (touchpad) "Pad" else "Keys") {
+                    BarIcon(
+                        // Shows what you would switch *to*, which is the convention the rest
+                        // of LightOS follows for a toggle.
+                        icon = if (touchpad) R.drawable.ic_dialpad_white else R.drawable.ic_crosshair_white,
+                        label = if (touchpad) "Switch to D-pad" else "Switch to trackpad",
+                    ) {
                         touchpad = !touchpad
                         vm.preferTouchpad = touchpad
                     },
-                    BarAction("Apps", enabled = state.connection == ConnectionState.Connected) {
-                        onOpenApps()
-                    },
-                    BarAction("Type", enabled = state.connection == ConnectionState.Connected) {
-                        onOpenKeyboard()
-                    },
+                    BarIcon(R.drawable.ic_list_white, "Apps", enabled = live) { onOpenApps() },
+                    BarIcon(R.drawable.ic_compose_white, "Type", enabled = live) { onOpenKeyboard() },
                 ),
             )
         },
@@ -167,19 +173,30 @@ private fun DirectionPad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
             PadButton({ vm.press(HidCommand.Right) }) { ArrowIcon(R.drawable.ic_arrow_right_white) }
         }
         PadButton({ vm.press(HidCommand.Down) }) { ArrowIcon(R.drawable.ic_down_white) }
+        NavigationRow(vm)
+    }
+}
 
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(top = 1f.gridDp()),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            // Holding Menu is how you get back to the home screen on a real remote, and
-            // holding Home opens the app switcher, so both gestures are wired up.
-            LabelButton("Menu", onClick = { vm.press(HidCommand.Menu) }, onHold = { vm.hold(HidCommand.Menu) })
-            LabelButton("Home", onClick = { vm.press(HidCommand.Home) }, onHold = { vm.hold(HidCommand.Home) })
-            LabelButton("Ctrl", onClick = { vm.controlCenter() })
-        }
+/**
+ * Back, Menu, Home — named the way the television behaves rather than the way the protocol
+ * does.
+ *
+ * The HID command called "Menu" is what tvOS treats as *back*, and holding it is what jumps
+ * to the home screen. What sits behind "Menu" here is the control-centre overlay, which is
+ * the menu you actually get on a modern Apple TV. Same row on both faces of the remote, so
+ * there is always a way back.
+ */
+@Composable
+private fun NavigationRow(vm: RemoteViewModel) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 0.8f.gridDp()),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+    ) {
+        LabelButton("Back", onClick = { vm.press(HidCommand.Menu) }, onHold = { vm.hold(HidCommand.Menu) })
+        LabelButton("Menu", onClick = { vm.controlCenter() })
+        LabelButton("Home", onClick = { vm.press(HidCommand.Home) }, onHold = { vm.hold(HidCommand.Home) })
     }
 }
 
@@ -247,14 +264,17 @@ private fun Touchpad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     Column(
         modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(
             Modifier
-                .padding(horizontal = 2f.gridDp())
+                // Takes the space that is left rather than forcing a square. aspectRatio(1f)
+                // on a full-width pad asks for 23 grid units of height when only about 21 are
+                // free once the bars and the transport row are placed, and the overflow drew
+                // straight over everything below it.
+                .weight(1f)
                 .fillMaxWidth()
-                .aspectRatio(1f)
+                .padding(horizontal = 1.5f.gridDp(), vertical = 0.5f.gridDp())
                 .border(1.dp, LightColors.Rule)
                 .pointerInput(Unit) {
                     awaitEachGesture {
@@ -292,25 +312,10 @@ private fun Touchpad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
                         }
                     }
                 },
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                "swipe · tap",
-                style = MaterialTheme.typography.labelSmall,
-                color = LightColors.Faint,
-                textAlign = TextAlign.Center,
-            )
-        }
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(top = 1f.gridDp()),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            LabelButton("Menu", onClick = { vm.press(HidCommand.Menu) }, onHold = { vm.hold(HidCommand.Menu) })
-            LabelButton("Home", onClick = { vm.press(HidCommand.Home) }, onHold = { vm.hold(HidCommand.Home) })
-            LabelButton("Ctrl", onClick = { vm.controlCenter() })
-        }
+        )
+        // No label inside the pad. It is a surface for a thumb, not something to read, and a
+        // caption in the middle of it just sat under the finger.
+        NavigationRow(vm)
     }
 }
 

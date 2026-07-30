@@ -35,6 +35,7 @@ data class RemoteUiState(
     val volume: Double = 0.0,
     val apps: List<InstalledApp> = emptyList(),
     val appsLoading: Boolean = false,
+    val pinned: Set<String> = emptySet(),
     val pairingPin: String = "",
     val pairingDeviceName: String? = null,
     val pairingBusy: Boolean = false,
@@ -48,7 +49,9 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     private val discovery = Discovery(app)
     private val client = CompanionClient(prefs.identity, viewModelScope)
 
-    private val _state = MutableStateFlow(RemoteUiState(paired = prefs.devices()))
+    private val _state = MutableStateFlow(
+        RemoteUiState(paired = prefs.devices(), pinned = prefs.pinnedApps()),
+    )
     val state: StateFlow<RemoteUiState> = _state.asStateFlow()
 
     private var discoveryJob: Job? = null
@@ -321,6 +324,11 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun launchApp(app: InstalledApp) = command { client.launchApp(app.bundleId) }
+
+    fun togglePin(app: InstalledApp) {
+        prefs.togglePin(app.bundleId)
+        _state.value = _state.value.copy(pinned = prefs.pinnedApps())
+    }
 
     fun loadFieldText() {
         viewModelScope.launch {
