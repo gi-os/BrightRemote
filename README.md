@@ -1,7 +1,7 @@
 # LightRemote
 
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
-released version: **v1.9.14**; the tracked source is at `1.10.0` pending its release tag.
+released version: **v1.10.16**; the tracked source is at `1.11.0` pending its release tag.
 
 Speaks Apple's **Companion** protocol directly — mDNS discovery, HAP pairing with the
 four-digit code on screen, then an encrypted session. No server, no bridge, no companion
@@ -74,10 +74,12 @@ labelled Back here.
 
 **Power** is held for a second rather than tapped. It sits where a thumb passes on the way to
 the back chevron, and putting the television to sleep by accident is the most annoying thing
-this app could do. Its two ticks are the interface: a light one when the touch lands says the
-hold is being counted, a heavy one says it fired — which matters because the usual way to
-check is to look at the set, and the set is what you are switching off. The icon also shows
-the current power state by how it is lit.
+this app could do. The vibration is the progress bar: it starts the instant your thumb lands,
+climbs while you hold, stops dead if you let go early, and ends in a heavy thump when it fires.
+That matters more here than anywhere else — the usual way to check whether a remote did
+anything is to look at the television, and the television is the thing being switched off.
+Motors without amplitude control climb by shortening the gaps instead. The icon also shows the
+current power state by how it is lit.
 
 Every button ticks on finger-*down*, not release — eyes are on the television, so the press
 confirms in your hand the instant it lands. This needs `android.permission.VIBRATE`, and it
@@ -192,9 +194,18 @@ Untested on hardware: pairing against a real Apple TV, and whether `NsdManager` 
 - Touch samples need ~16ms throttling or a full stream reads as a flick.
 - A trackpad needs a drag *threshold*, not just a tap-or-swipe verdict at the end. Opening the
   gesture on touch-down and forwarding every wobble means a thumb rolling a few pixels during a
-  tap sends the TV a swipe, which presents as the remote scrolling at random. Nothing goes out
-  until the finger passes `viewConfiguration.touchSlop`; the drag then opens from where the
-  finger *started*, not from where it crossed the line.
+  tap sends the TV a swipe. Nothing goes out until the finger passes
+  `viewConfiguration.touchSlop`; the drag then opens from where the finger *started*, not from
+  where it crossed the line.
+- **Touch samples must go out on one consumer.** This was the real cause of the trackpad
+  scrolling at random, and it is an easy one to write twice: a coroutine per sample dispatches
+  them in order, but each then suspends on its way to the socket, so they arrive in whatever
+  order they finish. Out-of-order samples make the finger look like it jumped backwards and the
+  television reads that as a flick — a steady drag makes the selection shoot up and down.
+  `CompanionClient` queues samples on a `Channel` drained by a single coroutine, timestamping
+  each at *enqueue* time. Under backpressure an intermediate `Hold` is droppable because the
+  next supersedes it; `Press`, `Release` and `Click` are not, since a lost `Release` leaves the
+  TV believing a finger is still down.
 - `_idsID` in `_systemInfo` is the *pairing* identifier, not the client's device id —
   getting it wrong completes the handshake and fails the first request, which presents as
   "paired but won't connect."

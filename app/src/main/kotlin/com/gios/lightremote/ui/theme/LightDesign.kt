@@ -174,6 +174,40 @@ private object LightHaptics {
     /** It fired. Deliberately unmistakable through a pocket. */
     fun heavy(context: Context) = pulse(context, 90, 255)
 
+    /**
+     * A continuous buzz that climbs from noticeable to insistent across [durationMs].
+     *
+     * One waveform rather than a loop of pulses: the motor is handed the whole ramp up front,
+     * so it starts the instant the finger lands and needs nothing scheduled per frame. Call
+     * [stop] when the finger lifts, which cuts it wherever it had got to.
+     */
+    fun ramp(context: Context, durationMs: Long) {
+        val vibrator = context.getSystemService(VibratorManager::class.java)?.defaultVibrator ?: return
+        runCatching {
+            val steps = 24
+            val slice = (durationMs / steps).coerceAtLeast(8)
+            val timings = LongArray(steps) { slice }
+            if (vibrator.hasAmplitudeControl()) {
+                // Starts at 55 rather than near zero: it has to be felt immediately, or the
+                // button reads as unresponsive for the first third of a second.
+                val amplitudes = IntArray(steps) { i ->
+                    (55 + (200.0 * i / (steps - 1))).toInt().coerceIn(1, 255)
+                }
+                vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
+            } else {
+                // No amplitude control, so climb by lengthening the on-phase instead: the
+                // gaps shrink until it reads as continuous. A leading 0 makes it start on.
+                val pattern = longArrayOf(0, 12, 34, 16, 30, 22, 26, 30, 20, 40, 14, 60, 8, 90)
+                vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+            }
+        }
+    }
+
+    fun stop(context: Context) {
+        val vibrator = context.getSystemService(VibratorManager::class.java)?.defaultVibrator ?: return
+        runCatching { vibrator.cancel() }
+    }
+
     private fun pulse(context: Context, milliseconds: Long, amplitude: Int) {
         val vibrator = context.getSystemService(VibratorManager::class.java)?.defaultVibrator ?: return
         runCatching {
@@ -254,10 +288,12 @@ fun Modifier.lightCombinedClickable(
  *
  * For destructive-ish buttons that sit in a bar you brush past — power being the one.
  *
- * The two ticks are the interface. A light one when the touch lands says *something is
- * counting*; a heavy one says *it fired*. Without the second there is no way to tell whether
- * you held it long enough except by looking at the television, which is the one thing you
- * cannot do while pointing a remote at a set that is off.
+ * The vibration *is* the progress bar. It starts the instant the finger lands, climbs for as
+ * long as the finger stays put, and stops dead when it lifts — so letting go early feels like
+ * abandoning something rather than like nothing having happened. A heavy thump marks the
+ * moment it fires. That matters more here than anywhere else in the app: the usual way to
+ * check whether a remote did anything is to look at the television, and the television is the
+ * thing being switched off.
  */
 fun Modifier.lightHoldable(
     durationMs: Long = 1_000,
@@ -269,9 +305,10 @@ fun Modifier.lightHoldable(
         if (!enabled) return@pointerInput
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false)
-            LightHaptics.light(context)
+            LightHaptics.ramp(context, durationMs)
             // Null means the timeout won rather than the finger lifting, so it was held.
             val liftedEarly = withTimeoutOrNull(durationMs) { waitForUpOrCancellation() }
+            LightHaptics.stop(context)
             if (liftedEarly == null) {
                 LightHaptics.heavy(context)
                 onHold()

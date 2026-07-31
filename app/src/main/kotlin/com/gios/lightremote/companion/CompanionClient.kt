@@ -2,8 +2,11 @@ package com.gios.lightremote.companion
 
 import com.gios.lightremote.proto.RtiPayloads
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.random.Random
 
@@ -278,6 +281,7 @@ class CompanionClient(
 
     private suspend fun touchStart() {
         touchBaseNanos = System.nanoTime()
+        startTouchPump()
         requireSession().request(
             "_touchStart",
             linkedMapOf(
@@ -448,21 +452,62 @@ class CompanionClient(
 
     // ------------------------------------------------------------------ touchpad
 
-    private suspend fun touchEvent(x: Int, y: Int, phase: TouchPhase) {
-        requireSession().sendEvent(
-            "_hidT",
-            linkedMapOf(
-                "_ns" to (System.nanoTime() - touchBaseNanos),
-                "_tFg" to 1L,
-                "_cx" to x.coerceIn(0, TOUCHPAD_SIZE).toLong(),
-                "_tPh" to phase.value,
-                "_cy" to y.coerceIn(0, TOUCHPAD_SIZE).toLong(),
-            ),
-        )
+    private class TouchSample(
+        val x: Int,
+        val y: Int,
+        val phase: TouchPhase,
+        /** Captured when the finger was there, not when the frame goes out. */
+        val nanos: Long,
+    )
+
+    /**
+     * Touch samples, in order, on one consumer.
+     *
+     * This queue is the whole reason the trackpad behaves. Sending each sample from its own
+     * coroutine looks harmless — they are dispatched in order — but every one of them then
+     * suspends on its way to the socket, so they arrive in whatever order they happen to
+     * finish. Out-of-order samples make the finger appear to jump backwards, and the
+     * television reads that as a flick: the selection shoots up and down at random while you
+     * drag steadily. One consumer means the stream on the wire is the stream your finger made.
+     */
+    private val touchQueue = Channel<TouchSample>(capacity = 128)
+
+    private var touchPump: Job? = null
+
+    private fun startTouchPump() {
+        if (touchPump?.isActive == true) return
+        touchPump = scope.launch {
+            for (sample in touchQueue) {
+                runCatching {
+                    session?.sendEvent(
+                        "_hidT",
+                        linkedMapOf(
+                            "_ns" to sample.nanos,
+                            "_tFg" to 1L,
+                            "_cx" to sample.x.coerceIn(0, TOUCHPAD_SIZE).toLong(),
+                            "_tPh" to sample.phase.value,
+                            "_cy" to sample.y.coerceIn(0, TOUCHPAD_SIZE).toLong(),
+                        ),
+                    )
+                }
+            }
+        }
     }
 
-    /** Raw touch sample, for a trackpad that follows the finger. */
-    suspend fun touch(x: Int, y: Int, phase: TouchPhase) = touchEvent(x, y, phase)
+    /**
+     * Queue a touch sample. Never suspends, never fails loudly.
+     *
+     * If the queue is full the link is behind, and an intermediate [TouchPhase.Hold] is the
+     * right thing to drop — the next one supersedes it. Press, Release and Click are not
+     * droppable: losing a Release leaves the television believing a finger is still down.
+     */
+    fun touch(x: Int, y: Int, phase: TouchPhase) {
+        val sample = TouchSample(x, y, phase, System.nanoTime() - touchBaseNanos)
+        if (touchQueue.trySend(sample).isSuccess) return
+        if (phase == TouchPhase.Hold) return
+        // Worth a coroutine of its own to make sure it lands.
+        scope.launch { runCatching { touchQueue.send(sample) } }
+    }
 
     /**
      * A single swipe from start to end over [durationMs].
@@ -475,14 +520,14 @@ class CompanionClient(
         val endTime = System.nanoTime() + durationMs * 1_000_000
         var x = startX.toDouble()
         var y = startY.toDouble()
-        touchEvent(x.toInt(), y.toInt(), TouchPhase.Press)
+        touch(x.toInt(), y.toInt(), TouchPhase.Press)
         var now = System.nanoTime()
         while (now < endTime) {
             val remaining = (endTime - now).toDouble()
             val step = TOUCH_INTERVAL_MS * 1_000_000.0
             x += (endX - x) * step / remaining
             y += (endY - y) * step / remaining
-            touchEvent(
+            touch(
                 x.coerceIn(0.0, TOUCHPAD_SIZE.toDouble()).toInt(),
                 y.coerceIn(0.0, TOUCHPAD_SIZE.toDouble()).toInt(),
                 TouchPhase.Hold,
@@ -490,7 +535,7 @@ class CompanionClient(
             delay(TOUCH_INTERVAL_MS)
             now = System.nanoTime()
         }
-        touchEvent(endX, endY, TouchPhase.Release)
+        touch(endX, endY, TouchPhase.Release)
     }
 
     /** A tap on the trackpad, which the TV wants as a Select press plus a click sample. */
@@ -498,7 +543,7 @@ class CompanionClient(
         hid(true, HidCommand.Select)
         delay(20)
         hid(false, HidCommand.Select)
-        touchEvent(TOUCHPAD_SIZE, TOUCHPAD_SIZE, TouchPhase.Click)
+        touch(TOUCHPAD_SIZE, TOUCHPAD_SIZE, TouchPhase.Click)
     }
 
     // ------------------------------------------------------------------ text input

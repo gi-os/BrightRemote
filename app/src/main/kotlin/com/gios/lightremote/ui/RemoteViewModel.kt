@@ -309,7 +309,12 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         if (client.powerState == PowerState.Off) client.turnOn() else client.turnOff()
     }
 
-    fun touch(x: Int, y: Int, phase: TouchPhase) = command { client.touch(x, y, phase) }
+    /**
+     * Not routed through [command]: that starts a coroutine per call, and a coroutine per
+     * touch sample is what scrambled their order on the way to the socket. The client queues
+     * these itself, in order, on one consumer.
+     */
+    fun touch(x: Int, y: Int, phase: TouchPhase) = client.touch(x, y, phase)
 
     fun loadApps() {
         if (_state.value.appsLoading) return
