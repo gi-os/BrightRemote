@@ -1,7 +1,7 @@
 # LightRemote
 
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
-released version: **v1.12.18**; the tracked source is at `1.13.0` pending its release tag.
+released version: **v1.13.19**; the tracked source is at `1.13.1` pending its release tag.
 
 Speaks Apple's **Companion** protocol directly — mDNS discovery, HAP pairing with the
 four-digit code on screen, then an encrypted session. No server, no bridge, no companion
@@ -112,12 +112,18 @@ turn there would type a letter at the TV. No service, no permission, no root, an
 (the sensor fires faster than the display refreshes) and the first notch after a pause
 waits for a second to confirm it, since the wheel sits under a thumb.
 
-On the remote the wheel drives the *television*: one notch, one step of the tvOS focus up or
-down. This was deliberately not the case at first, on the grounds that a notch is a scroll
-gesture rather than a D-pad press — and that objection is real, which is why the notches are
-banked and paid out no faster than one per 110ms, with the bank clamped at four. Feed them
-straight through and a flick of the thumb sends a dozen presses and the highlight ends up
-somewhere nobody chose.
+On the remote the wheel drives the *television*, moving the tvOS focus up and down. Two
+notches per row: one-to-one was the obvious first guess and it overshot by exactly double,
+because the sensor is optical, so a "notch" is a sampling artefact rather than a detent you can
+feel, and what reads as one flick of the thumb is two of them. The remainder is kept between
+turns rather than discarded — throw it away and a wheel turned one notch at a time never moves
+anything, since no single notch reaches the threshold on its own.
+
+Steps are also paid out no faster than one per 110ms, with the bank clamped at four rows'
+worth. This was deliberately not wired up at all at first, on the grounds that a notch is a
+scroll gesture rather than a D-pad press; that objection is real, and the rate limit is the
+answer to it. Feed notches straight through and a flick sends a dozen presses and the highlight
+ends up somewhere nobody chose.
 
 The volume rocker *is* forwarded to the TV, through the same `dispatchKeyEvent` override,
 only while a TV is connected and the remote is the visible screen (otherwise the phone's

@@ -165,35 +165,49 @@ fun WheelScroll(web: WebView?, active: Boolean = true) {
 @Composable
 fun WheelSteps(
     active: Boolean = true,
+    notchesPerStep: Int = NOTCHES_PER_STEP,
     minIntervalMs: Long = 110,
     onStep: (Int) -> Unit,
 ) {
     val handler by rememberUpdatedState(onStep)
-    val pending = remember { Debt() }
+    val bank = remember { Debt() }
     val wake = remember { Channel<Unit>(Channel.CONFLATED) }
 
     ArmedNotches(active) { notches ->
-        pending.px = (pending.px + notches).coerceIn(-MAX_BANKED_STEPS, MAX_BANKED_STEPS)
+        bank.px = (bank.px + notches).coerceIn(-MAX_BANKED_NOTCHES, MAX_BANKED_NOTCHES)
         wake.trySend(Unit)
     }
 
-    LaunchedEffect(wake) {
+    LaunchedEffect(wake, notchesPerStep, minIntervalMs) {
         while (true) {
             wake.receive()
-            while (abs(pending.px) >= 1f) {
-                val direction = pending.px.sign
-                pending.px -= direction
+            while (abs(bank.px) >= notchesPerStep) {
+                val direction = bank.px.sign
+                bank.px -= direction * notchesPerStep
                 handler(direction.toInt())
                 delay(minIntervalMs)
             }
-            // Anything left is sub-notch rounding, not a step anyone asked for.
-            pending.px = 0f
+            // The remainder is kept, not discarded. Zeroing it would mean a wheel turned one
+            // notch at a time never moved anything at all, since no single notch reaches the
+            // threshold on its own.
         }
     }
 }
 
-/** Notches worth remembering mid-spin. Beyond this the focus overruns the gesture. */
-private const val MAX_BANKED_STEPS = 4f
+/**
+ * Notches the wheel has to travel to move the focus one row.
+ *
+ * One-to-one was the obvious first guess and it overshot by exactly double: the sensor is
+ * optical, so a "notch" is a sampling artefact rather than a detent you can feel, and what
+ * reads as one flick of the thumb is two of them.
+ */
+private const val NOTCHES_PER_STEP = 2
+
+/**
+ * Notches worth banking mid-spin — four rows' worth. Beyond this the focus keeps travelling
+ * after the thumb has stopped, which feels like the remote arguing with you.
+ */
+private const val MAX_BANKED_NOTCHES = 8f
 
 /**
  * Notches, minus the stray ones. See [ARM_NOTCHES].
