@@ -1,7 +1,7 @@
 # LightRemote
 
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
-released version: **v1.8.13**; the tracked source is at `1.9.0` pending its release tag.
+released version: **v1.9.14**; the tracked source is at `1.10.0` pending its release tag.
 
 Speaks Apple's **Companion** protocol directly — mDNS discovery, HAP pairing with the
 four-digit code on screen, then an encrypted session. No server, no bridge, no companion
@@ -67,12 +67,23 @@ quieter. The three volume icons are now a generated family — one speaker cone,
 for down, two for up, a cross for mute — so only the part that carries meaning differs.
 
 Also: the volume rocker drives the *television*, not the phone, while a TV is connected
-and the remote is on screen; **Power** shows current state by how the icon is lit; **Type**
-sends text to the focused field on the TV; the D-pad is still reachable behind **More**
-for stepping through tile grids. Every button ticks on finger-*down*, not release — eyes
-are on the television, so the press confirms in your hand the instant it lands. Names
-follow tvOS, not the protocol: the HID command Apple calls "Menu" is what tvOS treats as
-back, so it is labelled Back here.
+and the remote is on screen; **Type** sends text to the focused field on the TV; the D-pad
+is still reachable behind **More** for stepping through tile grids. Names follow tvOS, not
+the protocol: the HID command Apple calls "Menu" is what tvOS treats as back, so it is
+labelled Back here.
+
+**Power** is held for a second rather than tapped. It sits where a thumb passes on the way to
+the back chevron, and putting the television to sleep by accident is the most annoying thing
+this app could do. Its two ticks are the interface: a light one when the touch lands says the
+hold is being counted, a heavy one says it fired — which matters because the usual way to
+check is to look at the set, and the set is what you are switching off. The icon also shows
+the current power state by how it is lit.
+
+Every button ticks on finger-*down*, not release — eyes are on the television, so the press
+confirms in your hand the instant it lands. This needs `android.permission.VIBRATE`, and it
+needs every clickable to go through `lightClickable` or `lightCombinedClickable`: reaching for
+Compose's `combinedClickable` directly is what left the three bottom-bar buttons silent, since
+they were the only ones carrying a hold.
 
 **Not implemented:** now-playing title or album art (needs the MRP/AirPlay 2 stack above)
 and a manual-IP fallback if mDNS discovery fails.
@@ -179,6 +190,11 @@ Untested on hardware: pairing against a real Apple TV, and whether `NsdManager` 
 - `srptools` serialises integers minimally (leading zero bytes dropped) except the two
   RFC 5054 `PAD()` sites — `Srp.minimalBytes` reproduces that exactly.
 - Touch samples need ~16ms throttling or a full stream reads as a flick.
+- A trackpad needs a drag *threshold*, not just a tap-or-swipe verdict at the end. Opening the
+  gesture on touch-down and forwarding every wobble means a thumb rolling a few pixels during a
+  tap sends the TV a swipe, which presents as the remote scrolling at random. Nothing goes out
+  until the finger passes `viewConfiguration.touchSlop`; the drag then opens from where the
+  finger *started*, not from where it crossed the line.
 - `_idsID` in `_systemInfo` is the *pairing* identifier, not the client's device id —
   getting it wrong completes the handshake and fails the first request, which presents as
   "paired but won't connect."

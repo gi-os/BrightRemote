@@ -5,8 +5,10 @@ import android.graphics.fonts.SystemFonts
 import android.os.VibrationEffect
 import android.os.VibratorManager
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -27,6 +29,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The LightOS design tokens, ported from `lightphone/light-sdk` (MIT).
@@ -161,11 +164,30 @@ fun LightRemoteTheme(content: @Composable () -> Unit) {
 }
 
 private object LightHaptics {
-    /** 45ms — tuned for the LP3's slow motor, per the SDK. */
-    fun click(context: Context) {
+
+    /** 45ms — tuned for the LP3's slow motor, per the SDK. The ordinary button tick. */
+    fun click(context: Context) = pulse(context, 45, VibrationEffect.DEFAULT_AMPLITUDE)
+
+    /** A hint rather than a confirmation: something is counting, nothing has happened yet. */
+    fun light(context: Context) = pulse(context, 20, 70)
+
+    /** It fired. Deliberately unmistakable through a pocket. */
+    fun heavy(context: Context) = pulse(context, 90, 255)
+
+    private fun pulse(context: Context, milliseconds: Long, amplitude: Int) {
         val vibrator = context.getSystemService(VibratorManager::class.java)?.defaultVibrator ?: return
         runCatching {
-            vibrator.vibrate(VibrationEffect.createOneShot(45, VibrationEffect.DEFAULT_AMPLITUDE))
+            // Motors without amplitude control reject a specific level, so fall back to the
+            // default strength. The durations still differ, which keeps light and heavy
+            // distinguishable even then.
+            val level = if (
+                amplitude == VibrationEffect.DEFAULT_AMPLITUDE || vibrator.hasAmplitudeControl()
+            ) {
+                amplitude
+            } else {
+                VibrationEffect.DEFAULT_AMPLITUDE
+            }
+            vibrator.vibrate(VibrationEffect.createOneShot(milliseconds, level))
         }
     }
 }
@@ -196,6 +218,68 @@ fun Modifier.lightClickable(
         enabled = enabled,
         onClick = onClick,
     )
+}
+
+/**
+ * The same, with a long press.
+ *
+ * Exists because `combinedClickable` is the only way to get a hold, and reaching for it
+ * directly loses the haptic that [lightClickable] adds — which is exactly what happened to
+ * the bottom bar: the three buttons that carry a hold were the three that did not tick.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+fun Modifier.lightCombinedClickable(
+    enabled: Boolean = true,
+    onLongClick: () -> Unit,
+    onClick: () -> Unit,
+): Modifier = composed {
+    val context = LocalContext.current
+    pointerInput(enabled) {
+        if (!enabled) return@pointerInput
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            LightHaptics.click(context)
+        }
+    }.combinedClickable(
+        interactionSource = null,
+        indication = null,
+        enabled = enabled,
+        onLongClick = onLongClick,
+        onClick = onClick,
+    )
+}
+
+/**
+ * Fires only after the finger has been held for [durationMs]. A shorter press does nothing.
+ *
+ * For destructive-ish buttons that sit in a bar you brush past — power being the one.
+ *
+ * The two ticks are the interface. A light one when the touch lands says *something is
+ * counting*; a heavy one says *it fired*. Without the second there is no way to tell whether
+ * you held it long enough except by looking at the television, which is the one thing you
+ * cannot do while pointing a remote at a set that is off.
+ */
+fun Modifier.lightHoldable(
+    durationMs: Long = 1_000,
+    enabled: Boolean = true,
+    onHold: () -> Unit,
+): Modifier = composed {
+    val context = LocalContext.current
+    pointerInput(enabled, durationMs) {
+        if (!enabled) return@pointerInput
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            LightHaptics.light(context)
+            // Null means the timeout won rather than the finger lifting, so it was held.
+            val liftedEarly = withTimeoutOrNull(durationMs) { waitForUpOrCancellation() }
+            if (liftedEarly == null) {
+                LightHaptics.heavy(context)
+                onHold()
+                // Swallow the release so it cannot read as a second gesture.
+                waitForUpOrCancellation()
+            }
+        }
+    }
 }
 
 /** Haptic tick without a click, for the repeating parts of a gesture. */

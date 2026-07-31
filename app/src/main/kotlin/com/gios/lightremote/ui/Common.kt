@@ -1,7 +1,6 @@
 package com.gios.lightremote.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +29,7 @@ import com.gios.lightremote.ui.theme.LightColors
 import com.gios.lightremote.ui.theme.LightGrid
 import com.gios.lightremote.ui.theme.gridDp
 import com.gios.lightremote.ui.theme.lightClickable
+import com.gios.lightremote.ui.theme.lightCombinedClickable
 
 /**
  * LightOS's top bar: 3 grid units tall, title in the `fine` style, optional back chevron.
@@ -161,7 +161,6 @@ data class BarIcon(
  * Not an overload of [LightBottomBar]: generics erase, so both would compile to the same JVM
  * signature.
  */
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun LightIconBar(icons: List<BarIcon>) {
     require(icons.size <= 5) { "LightOS allows at most five icon items in a bottom bar" }
@@ -186,9 +185,7 @@ fun LightIconBar(icons: List<BarIcon>) {
                             if (hold == null) {
                                 base.lightClickable(enabled = item.enabled, onClick = item.onClick)
                             } else {
-                                base.combinedClickable(
-                                    interactionSource = null,
-                                    indication = null,
+                                base.lightCombinedClickable(
                                     enabled = item.enabled,
                                     onLongClick = hold,
                                     onClick = item.onClick,
@@ -210,7 +207,6 @@ fun LightIconBar(icons: List<BarIcon>) {
 }
 
 /** A full-width list row: label in `copy`, sub-label in `detail` underneath. */
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun LightRow(
     label: String,
@@ -225,11 +221,7 @@ fun LightRow(
             .fillMaxWidth()
             .let { base ->
                 when {
-                    // combinedClickable is the only way to get a long press, and it brings
-                    // back the ripple unless indication is nulled out explicitly.
-                    onClick != null && onLongClick != null -> base.combinedClickable(
-                        interactionSource = null,
-                        indication = null,
+                    onClick != null && onLongClick != null -> base.lightCombinedClickable(
                         enabled = enabled,
                         onLongClick = onLongClick,
                         onClick = onClick,

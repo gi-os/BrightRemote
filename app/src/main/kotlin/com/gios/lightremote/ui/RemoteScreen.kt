@@ -45,6 +45,7 @@ import com.gios.lightremote.ui.theme.LightColors
 import com.gios.lightremote.ui.theme.LightGrid
 import com.gios.lightremote.ui.theme.gridDp
 import com.gios.lightremote.ui.theme.lightClickable
+import com.gios.lightremote.ui.theme.lightHoldable
 import com.gios.lightremote.ui.theme.tick
 
 /**
@@ -90,15 +91,19 @@ fun RemoteScreen(
                 onBack = onOpenDevices,
                 action = {
                     // Power doubles as the connection indicator: dim when we don't know.
+                    //
+                    // Hold for a second rather than tap. It sits in the corner your thumb
+                    // reaches for on the way to the back chevron, and putting the television
+                    // to sleep by accident is the most annoying thing this app could do.
                     Box(
                         Modifier
                             .size(LightGrid.BAR_ICON_UNITS.gridDp())
-                            .lightClickable(enabled = connected) { vm.togglePower() },
+                            .lightHoldable(enabled = connected) { vm.togglePower() },
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             painterResource(R.drawable.ic_power_white),
-                            contentDescription = "Power",
+                            contentDescription = "Power, hold for one second",
                             tint = when {
                                 !connected -> LightColors.Faint
                                 state.power == PowerState.On -> LightColors.Content
@@ -213,8 +218,15 @@ fun RemoteScreen(
  * The swipe surface: the whole area, no border, nothing drawn.
  *
  * Coordinates map straight onto the TV's 1000x1000 touch surface, and samples are throttled
- * to roughly one per 16ms. Both details matter: sending every pointer event floods the link
- * and the TV reads the burst as a flick, so a small drag overshoots by several rows.
+ * to roughly one per 16ms — sending every pointer event floods the link and the TV reads the
+ * burst as a flick, so a small drag overshoots by several rows.
+ *
+ * Nothing at all is sent until the finger has travelled past the platform's touch slop. That
+ * is what stops the phantom scrolling: a tap is never perfectly still, and the previous
+ * version opened the gesture on touch-down and then forwarded every wobble, so a thumb that
+ * rolled a few pixels while pressing sent the TV a swipe nobody asked for. Now a press that
+ * stays inside slop is only ever a click, and one that leaves it opens the drag from where the
+ * finger actually started rather than from wherever it happened to cross the threshold.
  */
 @Composable
 private fun Touchpad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
@@ -226,34 +238,53 @@ private fun Touchpad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     tick(context)
+                    val slop = viewConfiguration.touchSlop
                     val scaleX = CompanionClient.TOUCHPAD_SIZE / size.width.toFloat()
                     val scaleY = CompanionClient.TOUCHPAD_SIZE / size.height.toFloat()
+                    val startX = down.position.x
+                    val startY = down.position.y
+                    var dragging = false
                     var lastSent = 0L
-                    var lastX = (down.position.x * scaleX).toInt()
-                    var lastY = (down.position.y * scaleY).toInt()
-                    var moved = false
-                    vm.touch(lastX, lastY, TouchPhase.Press)
 
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        val x = (change.position.x * scaleX).toInt()
-                        val y = (change.position.y * scaleY).toInt()
+
                         if (!change.pressed) {
-                            vm.touch(x, y, TouchPhase.Release)
-                            // A press that never moved is a click, not a swipe.
-                            if (!moved) vm.click()
+                            if (dragging) {
+                                vm.touch(
+                                    (change.position.x * scaleX).toInt(),
+                                    (change.position.y * scaleY).toInt(),
+                                    TouchPhase.Release,
+                                )
+                            } else {
+                                // Never left slop, so it was a tap all along and the TV has
+                                // heard nothing about it yet.
+                                vm.click()
+                            }
                             break
                         }
-                        if (kotlin.math.abs(x - lastX) > 8 || kotlin.math.abs(y - lastY) > 8) {
-                            moved = true
+
+                        if (!dragging) {
+                            val dx = change.position.x - startX
+                            val dy = change.position.y - startY
+                            if (kotlin.math.hypot(dx, dy) < slop) continue
+                            dragging = true
+                            vm.touch(
+                                (startX * scaleX).toInt(),
+                                (startY * scaleY).toInt(),
+                                TouchPhase.Press,
+                            )
                         }
+
                         val now = System.currentTimeMillis()
                         if (now - lastSent >= 16) {
-                            vm.touch(x, y, TouchPhase.Hold)
+                            vm.touch(
+                                (change.position.x * scaleX).toInt(),
+                                (change.position.y * scaleY).toInt(),
+                                TouchPhase.Hold,
+                            )
                             lastSent = now
-                            lastX = x
-                            lastY = y
                         }
                     }
                 }
