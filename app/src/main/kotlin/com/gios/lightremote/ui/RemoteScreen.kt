@@ -92,9 +92,11 @@ fun RemoteScreen(
                 action = {
                     // Power doubles as the connection indicator: dim when we don't know.
                     //
-                    // Hold for a second rather than tap. It sits in the corner your thumb
-                    // reaches for on the way to the back chevron, and putting the television
-                    // to sleep by accident is the most annoying thing this app could do.
+                    // Held for three seconds rather than tapped. It sits in the corner your
+                    // thumb reaches for on the way to the back chevron, and putting the
+                    // television to sleep by accident is the most annoying thing this app
+                    // could do. The climbing buzz is what makes three seconds bearable — it
+                    // tells you the hold is being counted rather than leaving you guessing.
                     Box(
                         Modifier
                             .size(LightGrid.BAR_ICON_UNITS.gridDp())
@@ -103,7 +105,7 @@ fun RemoteScreen(
                     ) {
                         Icon(
                             painterResource(R.drawable.ic_power_white),
-                            contentDescription = "Power, hold for one second",
+                            contentDescription = "Power, hold for three seconds",
                             tint = when {
                                 !connected -> LightColors.Faint
                                 state.power == PowerState.On -> LightColors.Content

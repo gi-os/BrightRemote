@@ -1,7 +1,7 @@
 # LightRemote
 
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
-released version: **v1.10.16**; the tracked source is at `1.11.0` pending its release tag.
+released version: **v1.11.17**; the tracked source is at `1.12.0` pending its release tag.
 
 Speaks Apple's **Companion** protocol directly — mDNS discovery, HAP pairing with the
 four-digit code on screen, then an encrypted session. No server, no bridge, no companion
@@ -72,14 +72,15 @@ is still reachable behind **More** for stepping through tile grids. Names follow
 the protocol: the HID command Apple calls "Menu" is what tvOS treats as back, so it is
 labelled Back here.
 
-**Power** is held for a second rather than tapped. It sits where a thumb passes on the way to
-the back chevron, and putting the television to sleep by accident is the most annoying thing
-this app could do. The vibration is the progress bar: it starts the instant your thumb lands,
-climbs while you hold, stops dead if you let go early, and ends in a heavy thump when it fires.
-That matters more here than anywhere else — the usual way to check whether a remote did
-anything is to look at the television, and the television is the thing being switched off.
-Motors without amplitude control climb by shortening the gaps instead. The icon also shows the
-current power state by how it is lit.
+**Power** is held for three seconds rather than tapped. It sits where a thumb passes on the
+way to the back chevron, and putting the television to sleep by accident is the most annoying
+thing this app could do. The vibration is the progress bar: it starts the instant your thumb
+lands, climbs across the three seconds, stops dead if you let go early, and ends in a heavy
+thump when it fires. That is what makes three seconds bearable rather than broken-feeling —
+otherwise the usual way to check whether a remote did anything is to look at the television,
+and the television is the thing being switched off. Motors without amplitude control climb by
+shortening the gaps between pulses instead, and the pattern is built from the hold duration so
+it cannot stop buzzing early. The icon also shows the current power state by how it is lit.
 
 Every button ticks on finger-*down*, not release — eyes are on the television, so the press
 confirms in your hand the instant it lands. This needs `android.permission.VIBRATE`, and it

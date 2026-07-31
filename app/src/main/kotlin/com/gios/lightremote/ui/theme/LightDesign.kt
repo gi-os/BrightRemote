@@ -196,9 +196,21 @@ private object LightHaptics {
                 vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
             } else {
                 // No amplitude control, so climb by lengthening the on-phase instead: the
-                // gaps shrink until it reads as continuous. A leading 0 makes it start on.
-                val pattern = longArrayOf(0, 12, 34, 16, 30, 22, 26, 30, 20, 40, 14, 60, 8, 90)
-                vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+                // gaps shrink until it reads as continuous. Built from durationMs rather than
+                // written out, or it would stop buzzing early whenever the hold gets longer.
+                //
+                // createWaveform without amplitudes reads the timings as OFF, ON, OFF, ON…,
+                // so every pair is one pulse and the leading zero is what makes it start on.
+                val pulses = 12
+                val slice = (durationMs / pulses).coerceAtLeast(20)
+                val timings = ArrayList<Long>(pulses * 2)
+                for (i in 0 until pulses) {
+                    val fraction = 0.3 + 0.6 * i / (pulses - 1).toDouble()
+                    val on = (slice * fraction).toLong().coerceIn(6L, slice)
+                    timings.add(if (i == 0) 0L else (slice - on).coerceAtLeast(4L))
+                    timings.add(on)
+                }
+                vibrator.vibrate(VibrationEffect.createWaveform(timings.toLongArray(), -1))
             }
         }
     }
@@ -296,7 +308,7 @@ fun Modifier.lightCombinedClickable(
  * thing being switched off.
  */
 fun Modifier.lightHoldable(
-    durationMs: Long = 1_000,
+    durationMs: Long = 3_000,
     enabled: Boolean = true,
     onHold: () -> Unit,
 ): Modifier = composed {
