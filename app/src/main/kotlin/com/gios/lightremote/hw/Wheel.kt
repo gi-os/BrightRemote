@@ -12,6 +12,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -149,6 +150,50 @@ fun WheelScroll(web: WebView?, active: Boolean = true) {
         }
     }
 }
+
+/**
+ * Point the wheel at the television instead of at a list: one notch, one step.
+ *
+ * Used on the remote, where turning the wheel walks the tvOS focus up and down. The sensor
+ * fires every 35–60 ms, which is far quicker than anyone can read a moving highlight, so
+ * notches are banked and paid out no faster than [minIntervalMs]. Without that a flick of the
+ * thumb sends a dozen D-pad presses and the selection ends up somewhere nobody chose.
+ *
+ * The bank is clamped for the same reason: after a hard spin the tail of unpaid notches would
+ * otherwise keep walking the focus for a second after the thumb stopped.
+ */
+@Composable
+fun WheelSteps(
+    active: Boolean = true,
+    minIntervalMs: Long = 110,
+    onStep: (Int) -> Unit,
+) {
+    val handler by rememberUpdatedState(onStep)
+    val pending = remember { Debt() }
+    val wake = remember { Channel<Unit>(Channel.CONFLATED) }
+
+    ArmedNotches(active) { notches ->
+        pending.px = (pending.px + notches).coerceIn(-MAX_BANKED_STEPS, MAX_BANKED_STEPS)
+        wake.trySend(Unit)
+    }
+
+    LaunchedEffect(wake) {
+        while (true) {
+            wake.receive()
+            while (abs(pending.px) >= 1f) {
+                val direction = pending.px.sign
+                pending.px -= direction
+                handler(direction.toInt())
+                delay(minIntervalMs)
+            }
+            // Anything left is sub-notch rounding, not a step anyone asked for.
+            pending.px = 0f
+        }
+    }
+}
+
+/** Notches worth remembering mid-spin. Beyond this the focus overruns the gesture. */
+private const val MAX_BANKED_STEPS = 4f
 
 /**
  * Notches, minus the stray ones. See [ARM_NOTCHES].

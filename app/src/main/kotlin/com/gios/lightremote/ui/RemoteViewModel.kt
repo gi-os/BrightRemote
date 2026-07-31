@@ -16,6 +16,7 @@ import com.gios.lightremote.data.Prefs
 import com.gios.lightremote.discovery.DiscoveredDevice
 import com.gios.lightremote.discovery.Discovery
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,6 +24,15 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 
 enum class ConnectionState { Disconnected, Connecting, Connected }
+
+/** One attempt plus two automatic retries, per connect. */
+private const val CONNECT_ATTEMPTS = 3
+
+/** How long to let the TV finish tearing down its side before trying again. */
+private const val RETRY_DELAY_MS = 1_200L
+
+/** Automatic reconnects after a link drops on its own, before Retry becomes manual. */
+private const val LOST_RECONNECTS = 2
 
 data class RemoteUiState(
     val discovered: List<DiscoveredDevice> = emptyList(),
@@ -60,6 +70,19 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     private var pendingDevice: DiscoveredDevice? = null
     private var activeDeviceId: String? = null
 
+    /** The connect attempt in flight, so a second one cannot start beside it. */
+    private var connectJob: Job? = null
+
+    /**
+     * Automatic reconnects since the last successful connect.
+     *
+     * Bounded, and reset on success. An earlier attempt at this keyed a Compose effect on the
+     * connection state, which retried forever against a television that was simply switched
+     * off — a failed connect goes Connecting to Disconnected, and that is a state *change*.
+     * Counting the attempts here instead is what makes "give up eventually" expressible.
+     */
+    private var lostReconnects = 0
+
     init {
         client.onStateChanged = {
             _state.value = _state.value.copy(
@@ -75,6 +98,13 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 // A clean close is the app's own doing; only surface real failures.
                 error = cause?.let { "Lost the connection: ${it.friendlyMessage()}" },
             )
+            // A link that drops on its own gets picked back up, twice, before the Retry row
+            // becomes the user's problem. Wi-Fi hiccups and a TV waking from sleep both look
+            // like this, and both fix themselves.
+            if (cause != null && lostReconnects < LOST_RECONNECTS && activeDeviceId != null) {
+                lostReconnects++
+                prefs.devices().firstOrNull { it.id == activeDeviceId }?.let { connect(it) }
+            }
         }
     }
 
@@ -213,6 +243,9 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------ connection
 
     fun connect(device: PairedDevice) {
+        // One attempt at a time. Stacking them means two pair-verifies racing over two
+        // sockets, and the loser's teardown landing on the winner's state.
+        if (connectJob?.isActive == true) return
         activeDeviceId = device.id
         prefs.lastDeviceId = device.id
         _state.value = _state.value.copy(
@@ -221,9 +254,24 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             error = null,
             apps = emptyList(),
         )
-        viewModelScope.launch {
-            runCatching { client.connect(device.host, device.port, device.credentials) }
-                .onSuccess {
+        connectJob = viewModelScope.launch {
+            var lastError: Throwable? = null
+            // The first go plus two automatic retries. A television that has just dropped the
+            // link often refuses the next pair-verify for a moment while it tears down its own
+            // session, and one failed attempt is not evidence of anything.
+            repeat(CONNECT_ATTEMPTS) { attempt ->
+                if (attempt > 0) {
+                    _state.value = _state.value.copy(
+                        connection = ConnectionState.Connecting,
+                        error = null,
+                    )
+                    delay(RETRY_DELAY_MS)
+                }
+                val result = runCatching {
+                    client.connect(device.host, device.port, device.credentials)
+                }
+                if (result.isSuccess) {
+                    lostReconnects = 0
                     _state.value = _state.value.copy(
                         connection = ConnectionState.Connected,
                         power = client.powerState,
@@ -234,19 +282,36 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                         error = client.connectWarnings.takeIf { it.isNotEmpty() }
                             ?.joinToString("; ", prefix = "Connected, but "),
                     )
+                    return@launch
                 }
-                .onFailure { error ->
-                    _state.value = _state.value.copy(
-                        connection = ConnectionState.Disconnected,
-                        error = error.friendlyMessage(),
-                    )
-                }
+                lastError = result.exceptionOrNull()
+            }
+            _state.value = _state.value.copy(
+                connection = ConnectionState.Disconnected,
+                error = lastError?.friendlyMessage(),
+            )
         }
     }
 
+    /**
+     * Retry by hand.
+     *
+     * Cancels whatever attempt is in flight first. Without that, tapping Retry while a
+     * connect was still grinding through its TCP timeout did nothing at all — which is
+     * exactly what "the reconnect button doesn't work" looks like from the outside.
+     */
     fun reconnect() {
-        val id = activeDeviceId ?: prefs.lastDeviceId ?: return
-        prefs.devices().firstOrNull { it.id == id }?.let { connect(it) }
+        connectJob?.cancel()
+        connectJob = null
+        lostReconnects = 0
+        val id = activeDeviceId ?: prefs.lastDeviceId
+        val device = prefs.devices().firstOrNull { it.id == id }
+            ?: prefs.devices().firstOrNull()
+        if (device == null) {
+            _state.value = _state.value.copy(error = "No paired Apple TV to reconnect to")
+            return
+        }
+        connect(device)
     }
 
     /**
@@ -266,6 +331,12 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     fun hasPairedDevices(): Boolean = prefs.devices().isNotEmpty()
 
     fun disconnect() {
+        // Order matters: drop the device first, or the client's own teardown callback reads
+        // activeDeviceId as still set and immediately reconnects what was just closed.
+        connectJob?.cancel()
+        connectJob = null
+        activeDeviceId = null
+        lostReconnects = 0
         client.disconnect()
         _state.value = _state.value.copy(connection = ConnectionState.Disconnected, activeName = null)
     }

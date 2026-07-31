@@ -1,7 +1,7 @@
 # LightRemote
 
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
-released version: **v1.11.17**; the tracked source is at `1.12.0` pending its release tag.
+released version: **v1.12.18**; the tracked source is at `1.13.0` pending its release tag.
 
 Speaks Apple's **Companion** protocol directly — mDNS discovery, HAP pairing with the
 four-digit code on screen, then an encrypted session. No server, no bridge, no companion
@@ -88,6 +88,13 @@ needs every clickable to go through `lightClickable` or `lightCombinedClickable`
 Compose's `combinedClickable` directly is what left the three bottom-bar buttons silent, since
 they were the only ones carrying a hold.
 
+**Reconnecting** takes three goes before it becomes your problem: one attempt plus two
+automatic retries, 1.2s apart, because a TV that has just dropped the link often refuses the
+next pair-verify for a moment while it tears down its own session. A link that drops on its own
+is picked back up automatically twice more. Retry cancels whatever attempt is in flight before
+starting — without that, tapping it while a connect was grinding through a TCP timeout did
+nothing at all, which is exactly what a broken button looks like from the outside.
+
 **Not implemented:** now-playing title or album art (needs the MRP/AirPlay 2 stack above)
 and a manual-IP fallback if mDNS discovery fails.
 
@@ -103,8 +110,14 @@ land in the focused window as ordinary key events. `MainActivity` reads them in
 turn there would type a letter at the TV. No service, no permission, no root, and
 **nothing else needs installing for this**. Notches are paid off a fraction per frame
 (the sensor fires faster than the display refreshes) and the first notch after a pause
-waits for a second to confirm it, since the wheel sits under a thumb. The wheel does not
-drive the TV itself — a notch is a scroll gesture, not a D-pad press.
+waits for a second to confirm it, since the wheel sits under a thumb.
+
+On the remote the wheel drives the *television*: one notch, one step of the tvOS focus up or
+down. This was deliberately not the case at first, on the grounds that a notch is a scroll
+gesture rather than a D-pad press — and that objection is real, which is why the notches are
+banked and paid out no faster than one per 110ms, with the bank clamped at four. Feed them
+straight through and a flick of the thumb sends a dozen presses and the highlight ends up
+somewhere nobody chose.
 
 The volume rocker *is* forwarded to the TV, through the same `dispatchKeyEvent` override,
 only while a TV is connected and the remote is the visible screen (otherwise the phone's

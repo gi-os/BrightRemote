@@ -41,6 +41,7 @@ import com.gios.lightremote.companion.HidCommand
 import com.gios.lightremote.companion.PowerState
 import com.gios.lightremote.companion.TouchPhase
 import com.gios.lightremote.hw.LocalVolumeBus
+import com.gios.lightremote.hw.WheelSteps
 import com.gios.lightremote.ui.theme.LightColors
 import com.gios.lightremote.ui.theme.LightGrid
 import com.gios.lightremote.ui.theme.gridDp
@@ -79,6 +80,12 @@ fun RemoteScreen(
         volumeBus?.presses?.collect { delta ->
             if (delta > 0) vm.volumeUp() else vm.volumeDown()
         }
+    }
+
+    // The wheel walks the tvOS focus vertically. One notch, one step, rate-limited — the
+    // sensor fires faster than a moving highlight can be read.
+    WheelSteps(active = connected) { direction ->
+        vm.press(if (direction > 0) HidCommand.Up else HidCommand.Down)
     }
 
     Scaffold(
