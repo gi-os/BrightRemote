@@ -102,17 +102,6 @@ class Prefs(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_PREFER_TOUCHPAD, value).apply()
 
     /**
-     * Whether leaving the remote open should survive the screen going off.
-     *
-     * Off by default, and deliberately so: it needs the "Display over other apps" grant to
-     * work at all (see WakeWatcher), and a fresh install that silently asks for an overlay
-     * permission is an app that looks like it is up to something. Turning it on is the ask.
-     */
-    var stayOpen: Boolean
-        get() = prefs.getBoolean(KEY_STAY_OPEN, false)
-        set(value) = prefs.edit().putBoolean(KEY_STAY_OPEN, value).apply()
-
-    /**
      * Bundle ids pinned to the top of the app list.
      *
      * Kept per install rather than per device: the handful of apps worth pinning are the ones
@@ -132,6 +121,5 @@ class Prefs(context: Context) {
         const val KEY_LAST_DEVICE = "last_device"
         const val KEY_PREFER_TOUCHPAD = "prefer_touchpad"
         const val KEY_PINNED = "pinned_apps"
-        const val KEY_STAY_OPEN = "stay_open"
     }
 }

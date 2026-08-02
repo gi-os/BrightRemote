@@ -1,7 +1,7 @@
 # LightRemote
 
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
-released version: **v1.13.19**; the tracked source is at `1.14.0` pending its release tag.
+released version: **v1.14.x**; the tracked source is at `1.15.0` pending its release tag.
 
 Speaks Apple's **Companion** protocol directly — mDNS discovery, HAP pairing with the
 four-digit code on screen, then an encrypted session. No server, no bridge, no companion
@@ -99,41 +99,6 @@ nothing at all, which is exactly what a broken button looks like from the outsid
 and a manual-IP fallback if mDNS discovery fails.
 
 ## Configuration and usage
-
-### Stay open
-
-A setting at the bottom of **Devices**, off by default. With it on, waking the phone puts
-the remote back on screen instead of the LightOS home screen — same destination, same live
-session to the television. It applies only to the display switching itself off. Home, back,
-and the task switcher are all still ways to leave, and after any of them a wake brings back
-nothing.
-
-Three pieces make that work, and none of them is the obvious one:
-
-- **Telling "he left" apart from "the screen went off"** is not a timing heuristic.
-  `onUserLeaveHint` is called for home and the task switcher and is *never* called when the
-  system takes the screen away, which is exactly the line this setting needs. Backing out
-  finishes the activity instead, with no hint, so `isFinishing` covers that case. The rule
-  lives in `resume/ResumeRule.kt` with no Android imports in it, and is tested as callback
-  sequences rather than by pressing buttons on a phone.
-- **`ACTION_SCREEN_ON` cannot be declared in the manifest.** It is delivered only to
-  receivers registered in code, so something has to already be running to hear it — which is
-  why there is an `Application` subclass whose only job is to hold that registration. The
-  activity is stopped at the moment the broadcast arrives and cannot be it. If Android
-  reclaims the process while the phone sleeps, the registration goes with it and that wake is
-  missed. That is the ceiling on this without a foreground service and its permanent
-  notification, which is a worse trade on a phone like this one.
-- **Starting an activity from a receiver is a background activity launch**, closed in
-  Android 10 and tightened in 14. The exemption used here is `SYSTEM_ALERT_WINDOW` —
-  "Display over other apps" — which the setting asks for as it is switched on, and which is
-  re-read on every wake rather than remembered, so revoking it turns the setting off instead
-  of leaving it silently broken. Nothing in the app draws an overlay.
-
-The relaunch fires ~450 ms after the screen lights up. The launcher is waking too, and
-racing it is lost about as often as it is won; landing a beat later is both more reliable
-and less jarring than winning sometimes. `FLAG_ACTIVITY_REORDER_TO_FRONT` brings the
-existing task forward rather than starting a fresh one, which is what preserves the nav
-destination, the view model and the connection.
 
 ### The wheel
 
@@ -341,7 +306,8 @@ so consecutive tags can share a `major.minor` across several unrelated changes.
 
 | Version | Change |
 | --- | --- |
-| *(pending)* | Stay open: the phone comes back to the remote after the screen sleeps, but not after you press home (source bumped to `1.14.0`) |
+| *(pending)* | Remove Stay open — it could not work, and LightControl now does it properly (source bumped to `1.15.0`) |
+| v1.14.x | Stay open (withdrawn in v1.15 — see the release notes) |
 | *(pending)* | Hold More to jump straight to typing — every bottom-bar button now has a hold action (source bumped to `1.9.0`) |
 | v1.8.13 | Answer whether the wheel needs anything else installed (docs) |
 | v1.8.12 | Add mute, and give volume down its own icon |

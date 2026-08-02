@@ -1,7 +1,6 @@
 package com.gios.lightremote.ui
 
 import android.app.Application
-import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.gios.lightremote.companion.AuthenticationException
@@ -53,9 +52,6 @@ data class RemoteUiState(
     val pairingBusy: Boolean = false,
     val error: String? = null,
     val fieldText: String? = null,
-    val stayOpen: Boolean = false,
-    /** Whether "Display over other apps" is actually granted right now. */
-    val stayOpenGranted: Boolean = false,
 )
 
 class RemoteViewModel(app: Application) : AndroidViewModel(app) {
@@ -442,36 +438,6 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     var preferTouchpad: Boolean
         get() = prefs.preferTouchpad
         set(value) { prefs.preferTouchpad = value }
-
-    /**
-     * Re-read the Stay open setting and its overlay grant.
-     *
-     * Called from the activity's `onResume` rather than from the screen, because the one
-     * moment it has to be right is the return trip from the system Settings page where the
-     * grant is given — and that trip leaves no trace in Compose.
-     */
-    fun refreshStayOpen() {
-        val granted = Settings.canDrawOverlays(getApplication<Application>())
-        // A grant revoked in Settings turns the setting back off rather than leaving it
-        // reading "On" while it quietly does nothing.
-        if (!granted && prefs.stayOpen) prefs.stayOpen = false
-        _state.value = _state.value.copy(
-            stayOpen = prefs.stayOpen && granted,
-            stayOpenGranted = granted,
-        )
-    }
-
-    /**
-     * Toggle Stay open. Returns true when the overlay grant is still needed, which the
-     * activity turns into a trip to Settings — the view model does not start activities.
-     */
-    fun toggleStayOpen(): Boolean {
-        val granted = Settings.canDrawOverlays(getApplication<Application>())
-        if (!prefs.stayOpen && !granted) return true
-        prefs.stayOpen = !prefs.stayOpen
-        refreshStayOpen()
-        return false
-    }
 
     override fun onCleared() {
         super.onCleared()

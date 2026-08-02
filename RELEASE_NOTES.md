@@ -1,40 +1,32 @@
-## Apple TV v1.14 — Stay open
+## Apple TV v1.15 — Stay open removed, and done properly elsewhere
 
-**Leave the remote open and the phone will come back to it, instead of dropping you on the
-LightOS home screen every time the display sleeps.**
+**v1.14's Stay open setting could not work. It is gone, along with the overlay permission it
+asked for. The feature now lives in LightControl, where it actually functions.**
 
-Using a remote is minutes of picking the phone up, pressing one thing, and putting it back
-down. The screen times out between every one of those, and LightOS brings its home screen
-forward on wake — so pausing something meant waking the phone, finding Apple TV in the
-tools list, waiting for it to reconnect, and only then pressing pause. Long enough that it
-was usually quicker to go find the plastic remote.
+Stay open was meant to bring the remote back when you woke the phone, by listening for
+`ACTION_SCREEN_ON` and relaunching itself. On Android 14 that is not possible. A backgrounded
+app is cached, a cached app is frozen, and context-registered broadcasts to a frozen app are
+**queued until it is unfrozen** — so the broadcast arrives only once something has already
+brought the app forward, which is precisely the thing it was supposed to do. Nothing was ever
+going to unfreeze it. `ACTION_SCREEN_ON` cannot be declared in a manifest either, which is the
+one form of receiver that *does* unfreeze an app on delivery.
 
-**Stay open** is a new setting at the bottom of **Devices**, off until you turn it on. With
-it on, the phone waking puts the remote back exactly where you left it — same screen, same
-live connection to the television, a half-typed search still in the field.
+So the setting sat there reading "On" and doing nothing, and asking for **Display over other
+apps** in order to do it. An app holding a permission it cannot use is worse than an app without
+the feature, so both are out: the setting, the receiver, the `Application` subclass and the
+`SYSTEM_ALERT_WINDOW` declaration. Nothing else about the app changed — this release restores
+v1.13's behaviour exactly.
 
-It only applies to the screen going to sleep. **Leaving on purpose is still leaving:** press
-home, back out of the app, or switch to something else, and the remote stays gone until you
-open it again. That distinction is not a guess about how long the screen was off — Android
-tells the app when the *user* walked away (`onUserLeaveHint`) and stays silent when the
-system took the screen, so pressing home and the display timing out are two different events
-rather than one event that has to be interpreted.
+**Where it went.** LightControl v1.4 has a home-button action called *Back to where you were*.
+Its `ControlService` is an `AccessibilityService`, bound by the system, so its process is never
+cached and never frozen; it already watches which app is in front and already owns the home
+button. Bind **Home button opens → Back to where you were**, tick Apple TV under **Resume
+apps**, and the first home press after a wake brings the remote back with its session intact.
+The press after that goes home.
 
-Switching it on asks for **Display over other apps**. That grant is doing one specific job
-and nothing else: bringing an activity back from a broadcast receiver is a background
-activity launch, which Android has blocked since 10 and tightened again in 14, and holding
-that permission is the exemption that lets the relaunch land. The app draws no overlays and
-never has. Revoke it in Settings and the setting turns itself back off rather than sitting
-there reading "On" while doing nothing.
+v1.14 also had a real bug worth recording, since it is the kind that hides a working feature:
+tapping the setting without the overlay grant sent you to Settings but never turned the setting
+on, so you came back to a row still reading "Off" and had to tap it a second time.
 
-Two honest limits. The relaunch arrives about half a second after the screen lights up —
-firing instantly is a race against the launcher that is lost as often as it is won, and
-landing deliberately a beat later reads better than flickering. And if Android reclaims the
-app's process while the phone sleeps, there is nothing left listening for the wake and that
-one wake is missed; a remote you used minutes ago is normally still cached, but an overnight
-sleep will not bring it back. Avoiding that would mean a permanent notification in the shade,
-which is a worse trade on this phone.
-
-Also in this release: a `check.yml` workflow, so a change can be compiled and unit-tested on
-a branch before anything reaches a phone. Until now the only build that ever ran was the one
-that also published a release.
+Kept from v1.14: the `check.yml` workflow, which compiles and unit-tests a branch without
+publishing. That one was worth having.

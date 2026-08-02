@@ -21,17 +21,7 @@
         android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
 
-    <!--
-      Background activity launch. Waking the phone delivers ACTION_SCREEN_ON to a receiver in
-      a process with nothing on screen, and starting an activity from there has been blocked
-      since Android 10; holding "Display over other apps" is the exemption that makes the
-      relaunch land. It is requested from the Stay open setting, not at launch, and the
-      feature is off until it is granted — the app draws no overlays and never has.
-    -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-
     <application
-        android:name=".LightRemoteApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
