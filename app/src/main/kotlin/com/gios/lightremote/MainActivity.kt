@@ -1,14 +1,18 @@
 package com.gios.lightremote
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,6 +41,12 @@ class MainActivity : ComponentActivity() {
 
     /** Wheel notches on their way to whichever screen is up. */
     private val wheel = WheelBus()
+
+    /** Held on the Application, because it has to still be listening once this is stopped. */
+    private val wake get() = (application as LightRemoteApp).wake
+
+    /** Kept so `onResume` can re-read the overlay grant after a trip to Settings. */
+    private var vmRef: RemoteViewModel? = null
 
     /** Volume rocker presses, when a television is connected to take them. */
     private val volume = VolumeBus()
@@ -87,6 +97,7 @@ class MainActivity : ComponentActivity() {
             LightRemoteTheme {
                 val nav = rememberNavController()
                 val vm: RemoteViewModel = viewModel()
+                SideEffect { vmRef = vm }
 
                 // The selected device is held here rather than in the route: credentials
                 // have no business being URL-encoded into a navigation argument.
@@ -100,6 +111,7 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     if (!launched) {
                         launched = true
+                        vm.refreshStayOpen()
                         if (!vm.autoConnect()) nav.navigate("devices")
                     }
                 }
@@ -129,6 +141,14 @@ class MainActivity : ComponentActivity() {
                                     managing = device
                                     nav.navigate("forget")
                                 },
+                                onToggleStayOpen = {
+                                    // Switching it off disarms immediately rather than at the
+                                    // next stop, so the wake right after turning it off does
+                                    // not still bring the app back.
+                                    if (vm.toggleStayOpen()) requestOverlayPermission()
+                                    if (!vm.state.value.stayOpen) wake.rule.disarm()
+                                },
+                                onGrantOverlay = { requestOverlayPermission() },
                             )
                         }
                         composable("pair") {
@@ -177,6 +197,58 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * The four calls that tell a deliberate exit apart from the phone going to sleep.
+     *
+     * `onUserLeaveHint` is the whole trick — see `ResumeRule`. It fires for home and the task
+     * switcher and never for the screen switching off, which is exactly the line the setting
+     * is supposed to draw. Backing out finishes the activity instead, with no hint, so
+     * `isFinishing` is passed along to `onStop` to cover it.
+     */
+    override fun onResume() {
+        super.onResume()
+        wake.rule.onResumed()
+        // Cheap, and it is the one place that catches the grant being given on the system
+        // page we sent the user to, or taken away later without the app running.
+        vmRef?.refreshStayOpen()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        wake.rule.onPaused()
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        wake.rule.onUserLeave()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        wake.rule.onStopped(isFinishing)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isFinishing) vmRef = null
+    }
+
+    /**
+     * The system page for "Display over other apps", scoped to this package so it opens on
+     * our row rather than on the full list of everything installed.
+     */
+    private fun requestOverlayPermission() {
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:$packageName"),
+        )
+        // Some builds ship without the per-package form of this screen; the unscoped list is
+        // still a place the grant can be given, so it is worth the second try.
+        if (runCatching { startActivity(intent) }.isFailure) {
+            runCatching { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)) }
         }
     }
 

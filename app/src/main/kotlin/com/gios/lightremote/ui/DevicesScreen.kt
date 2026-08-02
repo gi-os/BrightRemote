@@ -38,6 +38,10 @@ fun DevicesScreen(
     onOpenRemote: (PairedDevice) -> Unit,
     onPair: (DiscoveredDevice) -> Unit,
     onManage: (PairedDevice) -> Unit,
+    /** Switch Stay open; called only when the overlay grant is already in hand. */
+    onToggleStayOpen: () -> Unit,
+    /** Send the user to the system page where "Display over other apps" is granted. */
+    onGrantOverlay: () -> Unit,
     /** Null on first run, when there is no remote to go back to. */
     onBack: (() -> Unit)? = null,
 ) {
@@ -120,6 +124,35 @@ fun DevicesScreen(
                             )
                         }
                     }
+                }
+
+                // The one setting the app has, so it lives at the bottom of the one list
+                // screen rather than behind a gear that would need a fourth destination.
+                item(key = "header-settings") { SectionLabel("Settings") }
+                item(key = "stay-open") {
+                    LightRow(
+                        label = "Stay open",
+                        sub = if (state.stayOpenGranted) {
+                            "Come back to the remote when the phone wakes"
+                        } else {
+                            "Needs permission to display over other apps"
+                        },
+                        trailing = {
+                            Text(
+                                if (state.stayOpen) "On" else "Off",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (state.stayOpen) {
+                                    LightColors.Content
+                                } else {
+                                    LightColors.ContentSecondary
+                                },
+                            )
+                        },
+                        onClick = {
+                            if (state.stayOpenGranted) onToggleStayOpen() else onGrantOverlay()
+                        },
+                    )
+                    Rule()
                 }
             }
         }
