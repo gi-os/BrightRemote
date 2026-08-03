@@ -1,32 +1,30 @@
-## Apple TV v1.15 — Stay open removed, and done properly elsewhere
+## LightRemote v1.16 — Shake the phone to report a bug
 
-**v1.14's Stay open setting could not work. It is gone, along with the overlay permission it
-asked for. The feature now lives in LightControl, where it actually functions.**
+**LightRemote can now file its own bug reports, and you can say what went wrong in your own words.**
 
-Stay open was meant to bring the remote back when you woke the phone, by listening for
-`ACTION_SCREEN_ON` and relaunching itself. On Android 14 that is not possible. A backgrounded
-app is cached, a cached app is frozen, and context-registered broadcasts to a frozen app are
-**queued until it is unfrozen** — so the broadcast arrives only once something has already
-brought the app forward, which is precisely the thing it was supposed to do. Nothing was ever
-going to unfreeze it. `ACTION_SCREEN_ON` cannot be declared in a manifest either, which is the
-one form of receiver that *does* unfreeze an app on delivery.
+Until now only Roll, Notebook and Phono could do this. Every other app on the phone failed
+silently: you would notice something wrong on the subway, have nowhere to put it, and have
+forgotten it by the time you were near a computer. This is the same feature, ported.
 
-So the setting sat there reading "On" and doing nothing, and asking for **Display over other
-apps** in order to do it. An app holding a permission it cannot use is worse than an app without
-the feature, so both are out: the setting, the receiver, the `Application` subclass and the
-`SYSTEM_ALERT_WINDOW` declaration. Nothing else about the app changed — this release restores
-v1.13's behaviour exactly.
+Shake the phone twice — there and back, twice — and a sheet comes up. Pick what happened from
+five chips, and add a note if you have something to add. The note is optional but it is the part
+that carries anything: "Something looks wrong" is a shrug, and what you type becomes the title of
+the issue. Under it the report carries the screen you were on, the app and firmware versions,
+free space, heap, and the stack trace if the app died the last time you had it open.
 
-**Where it went.** LightControl v1.4 has a home-button action called *Back to where you were*.
-Its `ControlService` is an `AccessibilityService`, bound by the system, so its process is never
-cached and never frozen; it already watches which app is in front and already owns the home
-button. Bind **Home button opens → Back to where you were**, tick Apple TV under **Resume
-apps**, and the first home press after a wake brings the remote back with its session intact.
-The press after that goes home.
+Three things raise the sheet. A shake, because you noticed something. A crash last run, asked
+once on the next launch, because that is the only moment the stack trace is still worth anything.
+And a failure the app noticed by itself — those are the reports that otherwise never get filed,
+because a screen that quietly came back empty looks ordinary.
 
-v1.14 also had a real bug worth recording, since it is the kind that hides a working feature:
-tapping the setting without the overlay grant sent you to Settings but never turned the setting
-on, so you came back to a row still reading "Off" and had to tap it a second time.
+Reports queue on disk before anything is sent, always. A phone that reports a freeze is by
+definition a phone that was just misbehaving, and a report that exists only in flight is the one
+report guaranteed to be lost. If there is no network, or this build has no reporting key, it
+waits on the phone until a build that does installs over it.
 
-Kept from v1.14: the `check.yml` workflow, which compiles and unit-tests a branch without
-publishing. That one was worth having.
+The gesture is tuned to be hard to trigger by accident: it counts reversals rather than force,
+because setting the phone down hard clears any threshold a shake clears, but only a shake
+*reverses*. Walking never fires it. That arithmetic now has unit tests in every app that has the
+feature.
+
+The accelerometer only runs while you are looking at the app.
