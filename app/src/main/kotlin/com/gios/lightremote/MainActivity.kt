@@ -32,8 +32,8 @@ import com.gios.lightremote.ui.PairScreen
 import com.gios.lightremote.ui.RemoteScreen
 import com.gios.lightremote.ui.RemoteViewModel
 import com.gios.lightremote.ui.theme.LightRemoteTheme
-import com.gios.lightremote.report.CrashLog
-import com.gios.lightremote.report.ReportOverlay
+import com.gios.light.common.report.LightReport
+import com.gios.light.common.report.ReportOverlay
 
 class MainActivity : ComponentActivity() {
 
@@ -84,7 +84,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // First thing, before anything else can throw: the handler chains onto whatever is
         // already installed and only writes a file, so it is safe this early.
-        CrashLog.install(this)
+        LightReport.install(
+            context = this,
+            appName = "LightRemote",
+            label = "remote",
+            token = BuildConfig.REPORT_TOKEN,
+        )
 
         requestNearbyDevicesIfNeeded()
 
