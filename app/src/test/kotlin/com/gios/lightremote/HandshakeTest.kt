@@ -9,6 +9,8 @@ import com.gios.lightremote.companion.TouchPhase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -111,6 +113,87 @@ class HandshakeTest {
                 seen.indexOf("_sessionStart") < seen.indexOf("_hidC"),
                 "session must be started before buttons are sent: $seen",
             )
+        }
+    }
+
+    /**
+     * A dozen requests started at once, which is not a stress test — it is Tuesday.
+     *
+     * Every command in the view model runs in its own coroutine, so anything the user does
+     * quickly overlaps: the wheel steps every 110 ms against round trips that can take longer
+     * than that, and volume, power and the app list all arrive on their own.
+     *
+     * The failure this guards is not a dropped request, it is a dead link. The output cipher is
+     * a counter, and if a frame is sealed outside the lock that serialises the writes, two
+     * senders can take nonces n and n+1 and then reach the socket in the other order. The
+     * device's stream cipher cannot resynchronise from that, so the whole connection ends —
+     * which is why [FakeAppleTv.failure] is the assertion that matters here.
+     */
+    @Test
+    fun `many overlapping requests do not desynchronise the cipher`() {
+        FakeAppleTv().use { tv ->
+            tv.start()
+            val credentials = withClient { client ->
+                val setup = client.startPairing("127.0.0.1", tv.port)
+                client.finishPairing(setup, "1234")
+            }
+
+            withClient { client ->
+                client.connect("127.0.0.1", tv.port, credentials)
+                val before = synchronized(tv.requests) { tv.requests.size }
+                coroutineScope {
+                    repeat(4) { launch { client.press(HidCommand.Up) } }
+                    repeat(4) { launch { client.refreshPowerState() } }
+                    repeat(4) { launch { client.appList() } }
+                }
+                assertTrue(client.isConnected, "the link died while commands overlapped")
+                client.disconnect()
+
+                val after = synchronized(tv.requests) { tv.requests.toList() }.drop(before)
+                // Eight button frames — a press is a DOWN and an UP — plus the other eight.
+                assertEquals(8, after.count { it == "_hidC" }, after.toString())
+                assertEquals(4, after.count { it == "FetchAttentionState" }, after.toString())
+                assertEquals(
+                    4,
+                    after.count { it == "FetchLaunchableApplicationsEvent" },
+                    after.toString(),
+                )
+            }
+            tv.failure?.let { throw AssertionError("device could not read the stream", it) }
+        }
+    }
+
+    /**
+     * A press is a DOWN and an UP, and they mean nothing apart.
+     *
+     * Two presses that overlap used to put DOWN, DOWN, UP, UP on the wire, because each half is
+     * a request that suspends waiting for its answer. The television reads the second DOWN
+     * arriving under the first as a key repeat and the focus travels further than the two rows
+     * asked for — the wheel "jumping around". The halves have to stay paired.
+     */
+    @Test
+    fun `overlapping presses still arrive as pairs`() {
+        FakeAppleTv().use { tv ->
+            tv.start()
+            val credentials = withClient { client ->
+                val setup = client.startPairing("127.0.0.1", tv.port)
+                client.finishPairing(setup, "1234")
+            }
+
+            withClient { client ->
+                client.connect("127.0.0.1", tv.port, credentials)
+                synchronized(tv.hidStates) { tv.hidStates.clear() }
+                coroutineScope {
+                    repeat(8) { launch { client.press(HidCommand.Down) } }
+                }
+                client.disconnect()
+            }
+            tv.failure?.let { throw AssertionError("device could not read the stream", it) }
+
+            val states = synchronized(tv.hidStates) { tv.hidStates.toList() }
+            assertEquals(16, states.size, states.toString())
+            // Strictly alternating from DOWN: any interleaving shows up as two of a kind.
+            assertEquals(List(8) { listOf(1L, 2L) }.flatten(), states, states.toString())
         }
     }
 

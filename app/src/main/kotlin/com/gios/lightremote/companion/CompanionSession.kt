@@ -54,12 +54,23 @@ class CompanionSession(private val connection: CompanionConnection) {
                 pendingByFrame.values.forEach { it.completeExceptionally(error) }
                 pendingByXid.clear()
                 pendingByFrame.clear()
-                onDisconnect?.invoke(failure)
+                // A close we asked for reports no cause. Closing the socket makes the reader
+                // throw — of course it does — and reporting that as a failure meant every
+                // deliberate teardown looked like the television hanging up: a "Lost the
+                // connection" banner on the way out, an automatic reconnect of something just
+                // closed, and, now that the app files its own reports, an offer to report a
+                // fault that was the app pressing the hook switch. Every reconnect starts by
+                // closing the old socket, so this fires on the happy path.
+                onDisconnect?.invoke(if (closing) null else failure)
             }
         }
     }
 
+    @Volatile
+    private var closing = false
+
     fun stop() {
+        closing = true
         readerJob?.cancel()
         readerJob = null
     }

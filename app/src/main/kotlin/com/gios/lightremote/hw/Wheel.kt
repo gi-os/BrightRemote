@@ -167,7 +167,7 @@ fun WheelSteps(
     active: Boolean = true,
     notchesPerStep: Int = NOTCHES_PER_STEP,
     minIntervalMs: Long = 110,
-    onStep: (Int) -> Unit,
+    onStep: suspend (Int) -> Unit,
 ) {
     val handler by rememberUpdatedState(onStep)
     val bank = remember { Debt() }
@@ -184,8 +184,17 @@ fun WheelSteps(
             while (abs(bank.px) >= notchesPerStep) {
                 val direction = bank.px.sign
                 bank.px -= direction * notchesPerStep
+                // Awaited, not fired and forgotten. A step is a request the television has to
+                // answer, and paying the bank out on a fixed timer regardless meant a spin whose
+                // round trip ran slower than the timer built a queue of presses that kept walking
+                // the focus after the thumb stopped — the clamp on the bank only limits notches
+                // nobody has spent yet, not steps already in the air.
+                val started = System.nanoTime()
                 handler(direction.toInt())
-                delay(minIntervalMs)
+                // A floor on the rate, not an addition to it: a round trip that already took
+                // longer than the interval has paced itself.
+                val elapsed = (System.nanoTime() - started) / 1_000_000
+                if (elapsed < minIntervalMs) delay(minIntervalMs - elapsed)
             }
             // The remainder is kept, not discarded. Zeroing it would mean a wheel turned one
             // notch at a time never moved anything at all, since no single notch reaches the
@@ -204,48 +213,107 @@ fun WheelSteps(
 private const val NOTCHES_PER_STEP = 2
 
 /**
- * Notches worth banking mid-spin — four rows' worth. Beyond this the focus keeps travelling
+ * Notches worth banking mid-spin — two rows' worth. Beyond this the focus keeps travelling
  * after the thumb has stopped, which feels like the remote arguing with you.
+ *
+ * This was four rows, and four rows is too many when one step is a network round trip: the
+ * coast outlived the gesture by most of a second, and every row of it looked like the remote
+ * moving on its own.
  */
-private const val MAX_BANKED_NOTCHES = 8f
+private const val MAX_BANKED_NOTCHES = 4f
 
 /**
- * Notches, minus the stray ones. See [ARM_NOTCHES].
+ * Notches against the turn needed to call it a reversal.
  *
- * Armed state lives in the effect rather than in composition state: it is a property of the
- * turn in progress, and a recomposition mid-turn should not disarm the wheel.
+ * The wheel is an optical sensor reading a moving surface, not a detented encoder, so a steady
+ * turn is not a clean run of same-sign notches: a few percent come back with the opposite sign,
+ * most often at the start and the end of a spin where the surface is barely moving. A scroller
+ * absorbs those — the debt is signed and they mostly cancel — but a control where one notch is
+ * one discrete action does not, and a single stray notch there is a whole row of tvOS focus
+ * travelling the wrong way. That is what "it jumps around" is.
+ *
+ * So while a turn is in progress notches against it are spent proving themselves and do nothing.
+ * Turning back for real produces a run of them and the third one through commits the reversal.
+ *
+ * Three, not two. Strays are not evenly distributed — they cluster where the surface is barely
+ * moving, which means two of them in a row is a normal thing to see, and at two this guard would
+ * hand one of them through *and* flip the direction it is protecting, so the next real notch
+ * would be swallowed instead. Three costs 120 ms on a deliberate change of direction, against the
+ * two notches it already takes to start a turn at all.
  */
+private const val REVERSE_NOTCHES = 3
+
+/** Notches, minus the stray ones. The rules are in [NotchGuard]. */
 @Composable
 private fun ArmedNotches(active: Boolean, onNotch: (Int) -> Unit) {
     val handler by rememberUpdatedState(onNotch)
     val bus = LocalWheelBus.current ?: return
     LaunchedEffect(bus, active) {
         if (!active) return@LaunchedEffect
-        var armed = false
-        var held = 0
-        var count = 0
-        var last = 0L
+        // Guard state lives in the effect rather than in composition state: it is a property of
+        // the turn in progress, and a recomposition mid-turn should not disarm the wheel.
+        val guard = NotchGuard()
         bus.notches.collect { notches ->
-            val now = System.nanoTime() / 1_000_000
-            if (now - last > IDLE_MS) {
-                armed = false
-                held = 0
-                count = 0
-            }
-            last = now
-            if (armed) {
-                handler(notches)
-                return@collect
-            }
-            held += notches
-            count++
-            if (count >= ARM_NOTCHES) {
-                armed = true
-                // Release what the guard was holding, so nothing deliberate is lost.
-                if (held != 0) handler(held) else handler(notches.sign)
-                held = 0
-            }
+            val emit = guard.accept(notches, System.nanoTime() / 1_000_000)
+            if (emit != 0) handler(emit)
         }
+    }
+}
+
+/**
+ * Which notches survive the guard, as plain arithmetic over (notch, clock).
+ *
+ * Pulled out of the collector so it can be tested. The whole of this file is otherwise a
+ * Composable and a `SharedFlow`, neither of which a JVM unit test can drive — and the two rules
+ * in here are exactly the kind that read as obviously right and then behave differently in the
+ * hand. There is no Android toolchain in the sandbox this is written in, so a test that runs
+ * without one is worth more than usual.
+ */
+internal class NotchGuard {
+    private var armed = false
+    private var held = 0
+    private var count = 0
+    private var last = 0L
+
+    /** Which way the turn in progress is going, and how many notches have come against it. */
+    private var turn = 0
+    private var against = 0
+
+    /** @return the notches to act on, or 0 to swallow this one. */
+    fun accept(notches: Int, nowMs: Long): Int {
+        if (nowMs - last > IDLE_MS) {
+            armed = false
+            held = 0
+            count = 0
+            turn = 0
+            against = 0
+        }
+        last = nowMs
+
+        if (armed) {
+            if (turn != 0 && notches.sign != 0 && notches.sign != turn) {
+                against++
+                // Too few of them to be a change of mind, so it was the sensor.
+                if (against < REVERSE_NOTCHES) return 0
+                turn = notches.sign
+                against = 0
+            } else {
+                against = 0
+                if (notches.sign != 0) turn = notches.sign
+            }
+            return notches
+        }
+
+        held += notches
+        count++
+        if (count < ARM_NOTCHES) return 0
+        armed = true
+        // Release what the guard was holding, so nothing deliberate is lost.
+        val release = if (held != 0) held else notches.sign
+        turn = release.sign
+        against = 0
+        held = 0
+        return release
     }
 }
 

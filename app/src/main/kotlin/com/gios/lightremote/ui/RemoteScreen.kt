@@ -82,10 +82,11 @@ fun RemoteScreen(
         }
     }
 
-    // The wheel walks the tvOS focus vertically. One notch, one step, rate-limited — the
-    // sensor fires faster than a moving highlight can be read.
+    // The wheel walks the tvOS focus vertically. Two notches a step, rate-limited — the sensor
+    // fires faster than a moving highlight can be read. Awaited rather than launched, so a slow
+    // link slows the wheel down instead of queueing presses behind it.
     WheelSteps(active = connected) { direction ->
-        vm.press(if (direction > 0) HidCommand.Up else HidCommand.Down)
+        vm.pressAwait(if (direction > 0) HidCommand.Up else HidCommand.Down)
     }
 
     Scaffold(

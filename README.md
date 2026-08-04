@@ -89,11 +89,30 @@ Compose's `combinedClickable` directly is what left the three bottom-bar buttons
 they were the only ones carrying a hold.
 
 **Reconnecting** takes three goes before it becomes your problem: one attempt plus two
-automatic retries, 1.2s apart, because a TV that has just dropped the link often refuses the
-next pair-verify for a moment while it tears down its own session. A link that drops on its own
-is picked back up automatically twice more. Retry cancels whatever attempt is in flight before
-starting — without that, tapping it while a connect was grinding through a TCP timeout did
-nothing at all, which is exactly what a broken button looks like from the outside.
+automatic retries, backing off 1.2s then 2.4s, because a TV that has just dropped the link
+refuses pair-verify for as long as it takes to tear down its own session — three attempts at a
+fixed 1.2s all landed inside the same refusal, which is three failures that are really one. A
+link that drops on its own is picked back up automatically twice more, and coming back to the app
+reconnects if it is not connected: the socket cannot survive the phone sleeping and a frozen
+process has no moment at which to notice, but returning to the app is a moment.
+
+**A tap outranks an attempt in flight.** Both Retry and tapping a device row cancel whatever is
+running first. Without that, a connect grinding through three TCP timeouts made tapping your
+Apple TV do nothing at all for twenty seconds — leaving Forget-and-pair-again as the only button
+that still worked, which is why the symptom reported was "it always re-pairs" rather than "it
+fails to reconnect". Automatic attempts still defer to each other, so a dropped link cannot stack
+sockets, and tapping the TV you are already connected to keeps that connection rather than
+rebuilding it.
+
+**Frames are sealed inside the write lock, not before it.** The output cipher is a counter and
+the device opens frames strictly in order, so sealing outside the lock let two overlapping
+commands take nonces *n* and *n+1* and reach the socket in the other order — which a stream
+cipher cannot recover from, so the television stopped being able to read anything and the
+connection ended. It presented as the Apple TV dropping the link for no reason a moment after you
+touched something, and spinning the wheel was the fastest way to cause it. Button presses are
+serialised for a related reason: a press is a DOWN and an UP, each waiting for its own reply, and
+two overlapping presses put DOWN, DOWN, UP, UP on the wire, which the television reads as a key
+repeat.
 
 **Not implemented:** now-playing title or album art (needs the MRP/AirPlay 2 stack above)
 and a manual-IP fallback if mDNS discovery fails.
@@ -119,8 +138,25 @@ feel, and what reads as one flick of the thumb is two of them. The remainder is 
 turns rather than discarded — throw it away and a wheel turned one notch at a time never moves
 anything, since no single notch reaches the threshold on its own.
 
-Steps are also paid out no faster than one per 110ms, with the bank clamped at four rows'
-worth. This was deliberately not wired up at all at first, on the grounds that a notch is a
+**A stray notch is not a change of direction.** The sensor reads a moving surface rather than a
+detent, so a steady turn is not a clean run of same-sign notches — a few percent come back
+inverted, most often at the start and end of a spin where the surface is barely moving. A
+scroller absorbs those, since the debt is signed and they mostly cancel; walking the tvOS focus
+does not, and one stray notch there is a whole row going the wrong way. So while a turn is in
+progress notches against it do nothing, and a real reversal commits on the third one through —
+three rather than two because strays cluster where the surface is barely moving, which makes two
+in a row ordinary, and at a threshold of two the guard would hand one through *and* flip the
+direction it is protecting. The rules live in `NotchGuard`, pulled out of its Composable so
+`NotchGuardTest` can
+drive them over a synthetic clock — the rest of `hw/Wheel.kt` needs a real sensor and a real
+frame clock, and there is no Android toolchain in the sandbox this is written in.
+
+Steps are also paid out no faster than one per 110ms — a floor on the rate rather than an addition
+to it, since each step is now *awaited* and a round trip that already took longer has paced
+itself. Firing them on the timer regardless was how a slow link built a queue of presses that kept
+walking the focus after the thumb stopped; clamping the bank does nothing about steps already in
+the air. The bank is clamped at two rows' worth, down from four, which outlived the gesture by most
+of a second. This was deliberately not wired up at all at first, on the grounds that a notch is a
 scroll gesture rather than a D-pad press; that objection is real, and the rate limit is the
 answer to it. Feed notches straight through and a flick sends a dozen presses and the highlight
 ends up somewhere nobody chose.
@@ -306,6 +342,8 @@ so consecutive tags can share a `major.minor` across several unrelated changes.
 
 | Version | Change |
 | --- | --- |
+| *(pending)* | Seal frames inside the write lock, serialise presses, wheel reversal guard, tap-beats-in-flight reconnect, report chip (source bumped to `1.17.0`) |
+| v1.16.x | Shake the phone to report a bug |
 | *(pending)* | Remove Stay open — it could not work, and LightControl now does it properly (source bumped to `1.15.0`) |
 | v1.14.x | Stay open (withdrawn in v1.15 — see the release notes) |
 | *(pending)* | Hold More to jump straight to typing — every bottom-bar button now has a hold action (source bumped to `1.9.0`) |

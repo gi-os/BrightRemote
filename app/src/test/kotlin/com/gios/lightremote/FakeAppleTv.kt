@@ -45,6 +45,9 @@ class FakeAppleTv(
     /** Requests seen after encryption came up, in order, for assertions. */
     val requests = mutableListOf<String>()
 
+    /** `_hBtS` from every `_hidC` frame, in arrival order: 1 is DOWN, 2 is UP. */
+    val hidStates = mutableListOf<Long>()
+
     /** Every pairing frame received, decoded, so tests can check the envelope. */
     val authFrames = mutableListOf<Map<String, Any?>>()
 
@@ -370,6 +373,14 @@ class FakeAppleTv(
         val identifier = message["_i"] as? String ?: return null
         val type = message["_t"] as? Long
         synchronized(requests) { requests.add(identifier) }
+        if (identifier == "_hidC") {
+            @Suppress("UNCHECKED_CAST")
+            val content = message["_c"] as? Map<String, Any?>
+            val state = content?.get("_hBtS") as? Long
+            // 1 is DOWN, 2 is UP. Recorded so a test can check that a press arrives as a pair
+            // rather than tangled with another press's halves.
+            if (state != null) synchronized(hidStates) { hidStates.add(state) }
+        }
         if (identifier == "_systemInfo") {
             @Suppress("UNCHECKED_CAST")
             systemInfo = message["_c"] as? Map<String, Any?>

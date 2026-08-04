@@ -7,6 +7,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.random.Random
 
@@ -328,6 +330,22 @@ class CompanionClient(
 
     // ------------------------------------------------------------------ buttons
 
+    /**
+     * One button at a time.
+     *
+     * A press is not one message, it is a DOWN and an UP that mean nothing apart, and each of
+     * them is a request that suspends waiting for its answer. Every button in the UI is its own
+     * coroutine, so without this two presses that overlap put DOWN, DOWN, UP, UP on the wire:
+     * the television sees the first key still held while the second arrives, treats it as a
+     * repeat, and the focus travels further than the two rows you asked for. Spinning the wheel
+     * does this on purpose — a step every 110 ms against a round trip that can take longer than
+     * that — which is why it read as the focus jumping around.
+     *
+     * A mutex rather than a queue, because unlike touch samples a button press is worth waiting
+     * for and there is never a reason to drop one.
+     */
+    private val buttonLock = Mutex()
+
     private suspend fun hid(down: Boolean, command: HidCommand) {
         requireSession().request(
             "_hidC",
@@ -338,14 +356,18 @@ class CompanionClient(
     suspend fun press(command: HidCommand) {
         // Nudging the volume by hand is an implicit unmute, so the remembered level goes.
         if (command == HidCommand.VolumeUp || command == HidCommand.VolumeDown) clearMute()
-        hid(true, command)
-        hid(false, command)
+        buttonLock.withLock {
+            hid(true, command)
+            hid(false, command)
+        }
     }
 
     suspend fun hold(command: HidCommand, durationMs: Long = 1000) {
-        hid(true, command)
-        delay(durationMs)
-        hid(false, command)
+        buttonLock.withLock {
+            hid(true, command)
+            delay(durationMs)
+            hid(false, command)
+        }
     }
 
     suspend fun doublePress(command: HidCommand) {
@@ -540,9 +562,11 @@ class CompanionClient(
 
     /** A tap on the trackpad, which the TV wants as a Select press plus a click sample. */
     suspend fun click() {
-        hid(true, HidCommand.Select)
-        delay(20)
-        hid(false, HidCommand.Select)
+        buttonLock.withLock {
+            hid(true, HidCommand.Select)
+            delay(20)
+            hid(false, HidCommand.Select)
+        }
         touch(TOUCHPAD_SIZE, TOUCHPAD_SIZE, TouchPhase.Click)
     }
 

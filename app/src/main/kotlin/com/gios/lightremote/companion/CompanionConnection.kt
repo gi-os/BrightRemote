@@ -84,12 +84,28 @@ class CompanionConnection(private val host: String, private val port: Int) {
         cipher = ChaChaCipherPair(outputKey, inputKey, nonceLength = 12)
     }
 
+    /**
+     * Guards sealing a frame and writing it *together*.
+     *
+     * Splitting those two is the bug this exists to prevent, and it is not a subtle one. The
+     * output cipher is a counter: each frame takes the next nonce, and the device decrypts
+     * strictly in sequence. So if two senders each seal a frame and then race for the socket,
+     * whichever holds nonce n+1 can reach the stream first, the television tries to open it
+     * with n, the tag fails — and a ChaCha20-Poly1305 stream cannot resynchronise, so that is
+     * the connection, gone. From the outside it looks like the Apple TV dropping the link for
+     * no reason a moment after you touched something.
+     *
+     * Two senders at once is the normal case here, not a corner: every button runs in its own
+     * coroutine and one press is two frames.
+     */
+    private val sendLock = Any()
+
     fun send(type: FrameType, payload: ByteArray) {
         val stream = output ?: throw IllegalStateException("not connected to the Apple TV")
         val active = cipher
-        var body = payload
+        val sealed = active != null && payload.isNotEmpty()
         var length = payload.size
-        if (active != null && payload.isNotEmpty()) length += AUTH_TAG_LENGTH
+        if (sealed) length += AUTH_TAG_LENGTH
 
         val header = byteArrayOf(
             type.value.toByte(),
@@ -97,12 +113,13 @@ class CompanionConnection(private val host: String, private val port: Int) {
             ((length shr 8) and 0xFF).toByte(),
             (length and 0xFF).toByte(),
         )
-        // The header is the AEAD associated data, which is what stops a frame being
-        // replayed as a different type.
-        if (active != null && payload.isNotEmpty()) body = active.encrypt(payload, aad = header)
 
-        Trace.sent(type, payload.size, active != null && payload.isNotEmpty())
-        synchronized(this) {
+        Trace.sent(type, payload.size, sealed)
+        synchronized(sendLock) {
+            // The header is the AEAD associated data, which is what stops a frame being
+            // replayed as a different type. Sealed inside the lock, so the nonce a frame takes
+            // and the position it goes out in are decided by the same critical section.
+            val body = if (sealed) active!!.encrypt(payload, aad = header) else payload
             stream.write(header)
             stream.write(body)
             stream.flush()

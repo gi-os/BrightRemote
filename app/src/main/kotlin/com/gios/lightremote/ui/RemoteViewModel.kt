@@ -15,6 +15,7 @@ import com.gios.lightremote.data.PairedDevice
 import com.gios.lightremote.data.Prefs
 import com.gios.lightremote.discovery.DiscoveredDevice
 import com.gios.lightremote.discovery.Discovery
+import com.gios.lightremote.report.Trouble
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -104,6 +105,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             if (cause != null && lostReconnects < LOST_RECONNECTS && activeDeviceId != null) {
                 lostReconnects++
                 prefs.devices().firstOrNull { it.id == activeDeviceId }?.let { connect(it) }
+            } else if (cause != null && activeDeviceId != null && lostReconnects >= LOST_RECONNECTS) {
+                // Only once the automatic reconnects are spent. Anything short of that is a
+                // Wi-Fi hiccup that fixed itself, and reports of those are noise.
+                Trouble.record("the Apple TV kept dropping the connection", cause)
             }
         }
     }
@@ -242,10 +247,34 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ connection
 
-    fun connect(device: PairedDevice) {
-        // One attempt at a time. Stacking them means two pair-verifies racing over two
-        // sockets, and the loser's teardown landing on the winner's state.
-        if (connectJob?.isActive == true) return
+    /**
+     * Connect to [device].
+     *
+     * [byHand] is a tap — a device row, or Retry — and a tap always wins. An automatic attempt
+     * already in flight is cancelled to make room for it, because an attempt can be grinding
+     * through three TCP timeouts and a pair-verify that will never answer, and during those
+     * twenty-odd seconds the old rule ("one attempt at a time, first one wins") made tapping the
+     * television do *nothing at all*. Which is the whole of "it fails to reconnect": the app was
+     * busy failing, silently, and refusing to be told otherwise. Ending with the user forgetting
+     * the device and pairing again, because pairing is the one button that was never blocked.
+     *
+     * Automatic attempts still defer to each other, so a dropped link cannot stack sockets.
+     */
+    fun connect(device: PairedDevice, byHand: Boolean = false) {
+        if (connectJob?.isActive == true) {
+            if (!byHand) return
+            connectJob?.cancel()
+            connectJob = null
+        }
+        // Already on this television and healthy: the tap was navigation, not a request to tear
+        // down a working session and spend two seconds rebuilding it.
+        if (byHand &&
+            activeDeviceId == device.id &&
+            _state.value.connection == ConnectionState.Connected &&
+            client.isConnected
+        ) {
+            return
+        }
         activeDeviceId = device.id
         prefs.lastDeviceId = device.id
         _state.value = _state.value.copy(
@@ -265,7 +294,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                         connection = ConnectionState.Connecting,
                         error = null,
                     )
-                    delay(RETRY_DELAY_MS)
+                    // Doubling, not fixed. A television tearing down its own session refuses
+                    // pair-verify for as long as that takes, and three attempts 1.2 s apart all
+                    // land inside the same refusal — three failures that are really one.
+                    delay(RETRY_DELAY_MS shl (attempt - 1))
                 }
                 val result = runCatching {
                     client.connect(device.host, device.port, device.credentials)
@@ -286,6 +318,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 lastError = result.exceptionOrNull()
             }
+            // Worth offering a report for. Every attempt is exhausted at this point, so this is
+            // not a hiccup — and the banner it also writes is gone the moment the screen changes,
+            // which is how a reconnect that never works goes unreported for a fortnight.
+            lastError?.let { Trouble.record("could not connect to the Apple TV", it) }
             _state.value = _state.value.copy(
                 connection = ConnectionState.Disconnected,
                 error = lastError?.friendlyMessage(),
@@ -311,7 +347,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(error = "No paired Apple TV to reconnect to")
             return
         }
-        connect(device)
+        connect(device, byHand = true)
     }
 
     /**
@@ -329,6 +365,30 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun hasPairedDevices(): Boolean = prefs.devices().isNotEmpty()
+
+    /**
+     * The app came back to the foreground.
+     *
+     * Nothing kept the link alive while it was away, and nothing could have: a socket does not
+     * survive the phone sleeping, and the process is frozen, so there is no moment at which the
+     * app could have noticed. What it *can* do is pick the connection back up the instant it is
+     * looked at again — which is the difference between a remote that works when you pull the
+     * phone out and one that shows a Retry row and waits to be asked.
+     *
+     * Only from Disconnected, so this cannot interfere with an attempt already under way, and
+     * only when a television is remembered.
+     */
+    fun onForeground() {
+        if (_state.value.connection != ConnectionState.Disconnected) return
+        if (connectJob?.isActive == true) return
+        // No "or the first one paired" fallback here, unlike [reconnect]. Forgetting the active
+        // television clears activeDeviceId, and picking some other remembered set to connect to
+        // on the next return to the app is not a thing anyone asked for.
+        val id = activeDeviceId ?: prefs.lastDeviceId ?: return
+        val device = prefs.devices().firstOrNull { it.id == id } ?: return
+        lostReconnects = 0
+        connect(device)
+    }
 
     fun disconnect() {
         // Order matters: drop the device first, or the client's own teardown callback reads
@@ -366,6 +426,18 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun press(button: HidCommand) = command { client.press(button) }
+
+    /**
+     * A press the caller waits for.
+     *
+     * The wheel needs this: it paces itself off how long a step actually takes, and it cannot do
+     * that against a function that returns the instant a coroutine is launched.
+     */
+    suspend fun pressAwait(button: HidCommand) {
+        runCatching { client.press(button) }.onFailure { error ->
+            _state.value = _state.value.copy(error = error.friendlyMessage())
+        }
+    }
     fun hold(button: HidCommand) = command { client.hold(button) }
     fun playPause() = command { client.press(HidCommand.PlayPause) }
     fun skipForward() = command { client.skipBy(15.0) }
