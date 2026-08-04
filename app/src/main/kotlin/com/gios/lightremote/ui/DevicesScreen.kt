@@ -20,7 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gios.lightremote.data.PairedDevice
 import com.gios.lightremote.discovery.DiscoveredDevice
-import com.gios.lightremote.hw.WheelScroll
+import com.gios.light.common.hw.WheelScroll
 import com.gios.lightremote.ui.theme.LightColors
 import com.gios.lightremote.ui.theme.LightGrid
 import com.gios.lightremote.ui.theme.gridDp

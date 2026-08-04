@@ -18,12 +18,12 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.gios.lightremote.data.PairedDevice
-import com.gios.lightremote.hw.LightKey
-import com.gios.lightremote.hw.LightKeys
+import com.gios.light.common.hw.LightKey
+import com.gios.light.common.hw.LightKeys
 import com.gios.lightremote.hw.LocalVolumeBus
-import com.gios.lightremote.hw.LocalWheelBus
+import com.gios.light.common.hw.LocalWheelBus
 import com.gios.lightremote.hw.VolumeBus
-import com.gios.lightremote.hw.WheelBus
+import com.gios.light.common.hw.WheelBus
 import com.gios.lightremote.ui.AppsScreen
 import com.gios.lightremote.ui.DevicesScreen
 import com.gios.lightremote.ui.ForgetDeviceScreen

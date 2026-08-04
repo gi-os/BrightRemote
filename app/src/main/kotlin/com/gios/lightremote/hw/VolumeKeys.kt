@@ -1,5 +1,6 @@
 package com.gios.lightremote.hw
 
+import com.gios.light.common.hw.WheelBus
 import androidx.compose.runtime.staticCompositionLocalOf
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow

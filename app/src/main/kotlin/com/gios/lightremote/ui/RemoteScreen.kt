@@ -41,7 +41,7 @@ import com.gios.lightremote.companion.HidCommand
 import com.gios.lightremote.companion.PowerState
 import com.gios.lightremote.companion.TouchPhase
 import com.gios.lightremote.hw.LocalVolumeBus
-import com.gios.lightremote.hw.WheelSteps
+import com.gios.light.common.hw.WheelSteps
 import com.gios.lightremote.ui.theme.LightColors
 import com.gios.lightremote.ui.theme.LightGrid
 import com.gios.lightremote.ui.theme.gridDp

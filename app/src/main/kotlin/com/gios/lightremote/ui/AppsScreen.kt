@@ -20,7 +20,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gios.lightremote.R
-import com.gios.lightremote.hw.WheelScroll
+import com.gios.light.common.hw.WheelScroll
 import com.gios.lightremote.ui.theme.LightColors
 import com.gios.lightremote.ui.theme.LightGrid
 import com.gios.lightremote.ui.theme.gridDp
