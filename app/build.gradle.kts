@@ -98,7 +98,7 @@ dependencies {
 
     // The wheel keys, shake-to-report and the LightSync backup provider, shared with every
     // other Light* app. Comes with its own R8 keep rules and a baseline profile.
-    implementation("com.gios:light-common:1.2.0")
+    implementation("com.gios:light-common:1.2.1")
     // What makes the AAR's baseline profile actually get applied — below API 31 nothing reads
     // a profile on its own, and the LPIII is where a slow cold start is most obvious.
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
