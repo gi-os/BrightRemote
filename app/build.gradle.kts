@@ -32,10 +32,11 @@ android {
         targetSdk = 35
         // CI overwrites both from the workflow run number; see .github/workflows/build.yml
         versionCode = 1
-        versionName = "1.17.0"
+        versionName = "1.18.0"
 
+        // LightReport.install reads this at startup; light-common has its own BuildConfig,
+        // so the app's key has to be handed in rather than looked up across the boundary.
         buildConfigField("String", "REPORT_TOKEN", "\"$reportToken\"")
-        buildConfigField("String", "REPORT_REPO", "\"gi-os/light-reports\"")
 
         // The LPIII is arm64 only; shipping four ABIs tripled the APK for nothing.
         ndk { abiFilters += "arm64-v8a" }
@@ -52,7 +53,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Same committed key as debug, so either APK upgrades over the other.
             signingConfig = signingConfigs.getByName("debug")
@@ -94,6 +96,13 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
+    // The wheel keys, shake-to-report and the LightSync backup provider, shared with every
+    // other Light* app. Comes with its own R8 keep rules and a baseline profile.
+    implementation("com.gios:light-common:1.2.0")
+    // What makes the AAR's baseline profile actually get applied — below API 31 nothing reads
+    // a profile on its own, and the LPIII is where a slow cold start is most obvious.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+
     // No crypto dependency on purpose. OPACK, TLV8, binary plists, SRP-6a, HKDF,
     // ChaCha20-Poly1305, Ed25519 and X25519 are all in src/main/kotlin, verified against
     // golden vectors generated from pyatv's own libraries (see scripts/genvec.py).
@@ -102,5 +111,5 @@ dependencies {
     // differently under Conscrypt than under OpenJDK, which would make the unit tests lie.
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.0.21")
+    testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.1.0")
 }

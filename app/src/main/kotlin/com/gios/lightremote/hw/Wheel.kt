@@ -1,5 +1,20 @@
 package com.gios.lightremote.hw
 
+/*
+ * The one part of `hw/` that did not move to light-common.
+ *
+ * light-common 1.2.0's wheel arms on two notches and then passes everything through, which is
+ * the right behaviour for scrolling a list. It is not the right behaviour here: walking the
+ * tvOS focus turns one inverted notch — a few percent of them are, because the sensor reads a
+ * moving surface rather than a detent — into a whole row going the wrong way. v1.17 fixed that
+ * with [NotchGuard], which also holds a turn's direction and only commits a reversal on the
+ * third notch against it, and which has eight tests over a synthetic clock.
+ *
+ * Deleting this file in favour of the library would put that bug back. The guard belongs
+ * upstream; until light-common carries it, this stays. Everything else in `hw/` — LightKeys,
+ * and the report module beside it — now comes from the library.
+ */
+
 import android.webkit.WebView
 import androidx.compose.foundation.gestures.ScrollableState
 import androidx.compose.runtime.Composable

@@ -15,7 +15,7 @@ import com.gios.lightremote.data.PairedDevice
 import com.gios.lightremote.data.Prefs
 import com.gios.lightremote.discovery.DiscoveredDevice
 import com.gios.lightremote.discovery.Discovery
-import com.gios.lightremote.report.Trouble
+import com.gios.light.common.report.Trouble
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow

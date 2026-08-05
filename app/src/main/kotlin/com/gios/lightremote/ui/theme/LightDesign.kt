@@ -1,7 +1,6 @@
 package com.gios.lightremote.ui.theme
 
 import android.content.Context
-import android.graphics.fonts.SystemFonts
 import android.os.VibrationEffect
 import android.os.VibratorManager
 import androidx.compose.foundation.clickable
@@ -23,7 +22,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
@@ -84,20 +82,20 @@ object LightColors {
 
     /** Only for structure this app adds — rules and the trackpad outline. */
     val Rule = Color(0xFF2A2A2A)
-    val Faint = Color(0xFF5E5E5E)
+
+    /**
+     * Disabled buttons and placeholder text. The library's value, not a copy of it: nine apps
+     * had independently written the same grey down, and this was one of them.
+     */
+    val Faint = com.gios.light.common.theme.Faint
 }
 
-/** LightOS phones ship Akkurat; pull it from the system so the app matches the chrome. */
-fun akkuratFamilyOrDefault(): FontFamily = runCatching {
-    val fonts = SystemFonts.getAvailableFonts()
-        .filter { it.file?.name?.startsWith("Akkurat", ignoreCase = true) == true }
-        .mapNotNull { font ->
-            val file = font.file ?: return@mapNotNull null
-            val style = if (font.style.slant != 0) FontStyle.Italic else FontStyle.Normal
-            Font(file = file, weight = FontWeight(font.style.weight), style = style)
-        }
-    if (fonts.isNotEmpty()) FontFamily(fonts) else FontFamily.Default
-}.getOrDefault(FontFamily.Default)
+/**
+ * LightOS phones ship Akkurat; pull it from the system so the app matches the chrome.
+ *
+ * The lookup itself now lives in light-common — it was byte-identical in every app that did it.
+ */
+fun akkuratFamilyOrDefault(): FontFamily = com.gios.light.common.theme.akkuratFamilyOrDefault()
 
 /**
  * The LP3 type scale, by name, in design pixels.

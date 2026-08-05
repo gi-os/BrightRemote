@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  # light-common is a GitHub Packages artifact, and even a public package needs a token.
+  packages: read
 
 jobs:
   build:
@@ -40,6 +42,11 @@ jobs:
       # gate the build.
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest --stacktrace
+        env:
+          # light-common resolves from GitHub Packages, which has no anonymous read.
+          GPR_USER: ${{ secrets.GPR_USER }}
+          GPR_TOKEN: ${{ secrets.GPR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build APKs
         run: ./gradlew :app:assembleDebug :app:assembleRelease --stacktrace
@@ -47,6 +54,10 @@ jobs:
           # Shake-to-report posts issues with this. Absent, the build still works —
           # reports queue on the phone until a build that has the key installs over it.
           REPORT_TOKEN: ${{ secrets.REPORT_TOKEN }}
+          # light-common resolves from GitHub Packages, which has no anonymous read.
+          GPR_USER: ${{ secrets.GPR_USER }}
+          GPR_TOKEN: ${{ secrets.GPR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Collect APK
         run: |

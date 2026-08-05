@@ -21,8 +21,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.gios.lightremote.data.PairedDevice
-import com.gios.lightremote.hw.LightKey
-import com.gios.lightremote.hw.LightKeys
+import com.gios.light.common.hw.LightKey
+import com.gios.light.common.hw.LightKeys
 import com.gios.lightremote.hw.LocalVolumeBus
 import com.gios.lightremote.hw.LocalWheelBus
 import com.gios.lightremote.hw.VolumeBus
@@ -35,8 +35,8 @@ import com.gios.lightremote.ui.PairScreen
 import com.gios.lightremote.ui.RemoteScreen
 import com.gios.lightremote.ui.RemoteViewModel
 import com.gios.lightremote.ui.theme.LightRemoteTheme
-import com.gios.lightremote.report.CrashLog
-import com.gios.lightremote.report.ReportOverlay
+import com.gios.light.common.report.LightReport
+import com.gios.light.common.report.ReportOverlay
 
 class MainActivity : ComponentActivity() {
 
@@ -85,9 +85,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // First thing, before anything else can throw: the handler chains onto whatever is
-        // already installed and only writes a file, so it is safe this early.
-        CrashLog.install(this)
+        // First thing, before anything else can throw. This is the one call the shared
+        // reporting module needs: BuildConfig does not cross a library boundary, so the app
+        // name, the triage label and the key have to be handed in. It also arms the crash
+        // handler, which chains onto whatever is already installed and only writes a file,
+        // so it is safe this early.
+        LightReport.install(
+            context = this,
+            appName = "LightRemote",
+            label = "remote",
+            token = BuildConfig.REPORT_TOKEN,
+        )
 
         requestNearbyDevicesIfNeeded()
 
