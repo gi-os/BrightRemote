@@ -1,4 +1,4 @@
-# LightRemote
+# BrightRemote
 
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
 released version: **v1.14.x**; the tracked source is at `1.15.0` pending its release tag.
@@ -23,7 +23,7 @@ on, no crypto library pulled in either (see [Protocol layer](#protocol-layer)).
 
 ## Quick start
 
-1. `git clone https://github.com/gi-os/LightRemote.git && cd LightRemote`
+1. `git clone https://github.com/gi-os/BrightRemote.git && cd BrightRemote`
 2. Grab the signed APK from [Releases](../../releases/latest), or build it:
    ```
    ./gradlew :app:assembleRelease
@@ -186,13 +186,13 @@ own volume would be unreachable). Both halves of the press are swallowed, since 
 the UP to Android pops its own volume panel over the remote.
 
 Optional, separate install for wheel-click and the camera button:
-[LightControl](https://github.com/gi-os/LightControl) gives the rest of the phone
+[BrightControl](https://github.com/gi-os/BrightControl) gives the rest of the phone
 brightness (hold wheel + turn), flashlight (tap), and camera (camera button), each
 rebindable. It does not take this app's own scrolling away — bare turns pass straight
 through to `com.gios.*`.
 
 ```bash
-adb install -r LightControl-v1.0.x.apk
+adb install -r BrightControl-v1.0.x.apk
 
 # NOTE: this replaces the accessibility-service list — colon-join if you also run
 # LightVoice's push-to-talk.
@@ -300,7 +300,7 @@ The link is encrypted after pair-verify and can't be watched from outside, so th
 narrates itself:
 
 ```
-adb logcat -s LightRemote
+adb logcat -s BrightRemote
 ```
 
 Every frame in/out (type, length, whether encrypted), every request's transaction id, and
@@ -364,7 +364,7 @@ so consecutive tags can share a `major.minor` across several unrelated changes.
 | *(pending)* | Back is a tap, unacknowledged presses are not failures, full-size D-pad, swipe gain, multicast lock, typed address (source bumped to `1.19.0`) |
 | *(pending)* | Seal frames inside the write lock, serialise presses, wheel reversal guard, tap-beats-in-flight reconnect, report chip (source bumped to `1.17.0`) |
 | v1.16.x | Shake the phone to report a bug |
-| *(pending)* | Remove Stay open — it could not work, and LightControl now does it properly (source bumped to `1.15.0`) |
+| *(pending)* | Remove Stay open — it could not work, and BrightControl now does it properly (source bumped to `1.15.0`) |
 | v1.14.x | Stay open (withdrawn in v1.15 — see the release notes) |
 | *(pending)* | Hold More to jump straight to typing — every bottom-bar button now has a hold action (source bumped to `1.9.0`) |
 | v1.8.13 | Answer whether the wheel needs anything else installed (docs) |
