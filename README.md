@@ -114,8 +114,27 @@ serialised for a related reason: a press is a DOWN and an UP, each waiting for i
 two overlapping presses put DOWN, DOWN, UP, UP on the wire, which the television reads as a key
 repeat.
 
-**Not implemented:** now-playing title or album art (needs the MRP/AirPlay 2 stack above)
-and a manual-IP fallback if mDNS discovery fails.
+**Discovery** browses `_companion-link._tcp` while holding a `WifiManager.MulticastLock`. Wi-Fi
+hardware drops multicast frames not addressed to it so the radio can sleep, and mDNS is
+multicast — without the lock the browse starts, reports no error and hears nothing. `NsdManager`
+takes one itself on most builds, which is why the gap only shows on a ROM like this one.
+
+Some networks will never carry it regardless: client isolation on guest and IoT networks drops
+multicast outright, mesh systems often will not forward it between nodes, and multicast filtering
+is on by default in plenty of routers. **Devices → Address** is the way through — the IP from the
+TV's Settings → General → About, with an optional `:port`, pairing normally from there. And when
+a connect fails with nothing answering at the stored address, the app re-browses for the device
+by name once and retries at whatever address it finds, which is the ordinary way this breaks: a
+DHCP lease expires while the set is unplugged.
+
+**Buttons do not require an acknowledgement.** The television answers `_hidC`, but not always and
+not promptly, and treating that silence as failure reported working presses as broken — then
+skipped the key-up, leaving tvOS repeating a key it believed was held. The release now goes out
+in an uncancellable `finally`, the wait is two seconds rather than eight (presses are serialised,
+so one stall blocks the rest), and a run of three unanswered presses raises a banner. Power is
+the exception and still throws: a set that refuses Sleep has to say so.
+
+**Not implemented:** now-playing title or album art — that needs the MRP/AirPlay 2 stack above.
 
 ## Configuration and usage
 
@@ -342,6 +361,7 @@ so consecutive tags can share a `major.minor` across several unrelated changes.
 
 | Version | Change |
 | --- | --- |
+| *(pending)* | Back is a tap, unacknowledged presses are not failures, full-size D-pad, swipe gain, multicast lock, typed address (source bumped to `1.19.0`) |
 | *(pending)* | Seal frames inside the write lock, serialise presses, wheel reversal guard, tap-beats-in-flight reconnect, report chip (source bumped to `1.17.0`) |
 | v1.16.x | Shake the phone to report a bug |
 | *(pending)* | Remove Stay open — it could not work, and LightControl now does it properly (source bumped to `1.15.0`) |

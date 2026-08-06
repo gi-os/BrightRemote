@@ -38,6 +38,7 @@ fun DevicesScreen(
     onOpenRemote: (PairedDevice) -> Unit,
     onPair: (DiscoveredDevice) -> Unit,
     onManage: (PairedDevice) -> Unit,
+    onEnterAddress: () -> Unit,
     /** Null on first run, when there is no remote to go back to. */
     onBack: (() -> Unit)? = null,
 ) {
@@ -60,6 +61,10 @@ fun DevicesScreen(
             LightBottomBar(
                 listOf(
                     BarAction(if (state.scanning) "Searching" else "Search") { vm.startDiscovery() },
+                    // Always offered, not only after a failed search. A browse that has just
+                    // started looks identical to one that is never going to find anything, so
+                    // hiding this until the app is sure would hide it exactly while it is wanted.
+                    BarAction("Address") { onEnterAddress() },
                 ),
             )
         },
@@ -68,10 +73,20 @@ fun DevicesScreen(
             state.error?.let { ErrorBanner(it) { vm.dismissError() } }
 
             if (state.paired.isEmpty() && state.discovered.isEmpty()) {
-                CenteredMessage(
-                    if (state.scanning) "Looking for an Apple TV" else "No Apple TV found",
-                    "Both devices need to be on the same Wi-Fi network.",
-                )
+                Box(Modifier.weight(1f)) {
+                    CenteredMessage(
+                        if (state.scanning) "Looking for an Apple TV" else "No Apple TV found",
+                        // Not just "check your Wi-Fi" any more. Being on the right network and
+                        // still finding nothing is a real and common state — plenty of routers
+                        // and most guest networks block the multicast this search rides on — and
+                        // telling someone to check something they have already checked is how an
+                        // app makes a working setup look broken.
+                        "Both devices need to be on the same Wi-Fi network. Some routers block " +
+                            "the search — if yours does, tap Address and type the TV's IP in.",
+                    )
+                }
+                LightRow(label = "Enter the TV's address", onClick = onEnterAddress)
+                Rule()
                 return@Column
             }
 

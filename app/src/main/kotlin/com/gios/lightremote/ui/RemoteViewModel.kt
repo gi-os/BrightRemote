@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.gios.lightremote.companion.AuthenticationException
 import com.gios.lightremote.companion.CompanionAuth
 import com.gios.lightremote.companion.CompanionClient
+import com.gios.lightremote.companion.Trace
 import com.gios.lightremote.companion.HidCommand
 import com.gios.lightremote.companion.InstalledApp
 import com.gios.lightremote.companion.MediaControlFlags
@@ -34,6 +35,16 @@ private const val RETRY_DELAY_MS = 1_200L
 
 /** Automatic reconnects after a link drops on its own, before Retry becomes manual. */
 private const val LOST_RECONNECTS = 2
+
+/**
+ * Where the Companion service listens when nothing has told us otherwise.
+ *
+ * Only for a hand-typed address. Discovered devices carry their real port, and a television does
+ * move off this one — it is the first free port from 49152 upwards, so a set that has been
+ * running a while can be several higher. Which is the one thing a typed address cannot know, and
+ * the reason this path is the fallback rather than the front door.
+ */
+private const val DEFAULT_COMPANION_PORT = 49152
 
 data class RemoteUiState(
     val discovered: List<DiscoveredDevice> = emptyList(),
@@ -93,6 +104,15 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 muted = client.isMuted,
             )
         }
+        // The socket is fine and the television has stopped listening. Nothing else notices this
+        // — the frames go out, no reply comes back, and every button silently does nothing — so
+        // it is worth one banner rather than a remote that has quietly become an ornament.
+        client.onPressesIgnored = {
+            _state.value = _state.value.copy(
+                error = "The Apple TV is not answering. Tap Retry, or wake it with the remote.",
+            )
+            Trouble.record("the Apple TV stopped acknowledging buttons")
+        }
         client.onDisconnected = { cause ->
             _state.value = _state.value.copy(
                 connection = ConnectionState.Disconnected,
@@ -131,7 +151,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     // address may have moved, so refresh that quietly.
                     val paired = prefs.devices()
                     devices.forEach { found ->
-                        paired.firstOrNull { it.name == found.name }?.let {
+                        // By name, or by address for one paired by hand — that one has no service
+                        // name to match on, so without the second clause its stored address is
+                        // never refreshed even once mDNS starts working.
+                        paired.firstOrNull { it.name == found.name || it.name == found.host }?.let {
                             if (it.host != found.host || it.port != found.port) {
                                 prefs.updateAddress(it.id, found.host, found.port)
                             }
@@ -178,6 +201,20 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 }
         }
     }
+
+    /**
+     * Pair with a television at an address typed in by hand.
+     *
+     * Named after the address because that is all there is to go on — the service name arrives
+     * over mDNS, and this path exists precisely because mDNS produced nothing. The name is only
+     * ever an identity for the pairing and a label in the list, and if the browse starts working
+     * later the device will simply appear a second time under its real name, which is honest: a
+     * second pairing is what it would be.
+     */
+    fun beginPairingAt(host: String, port: Int? = null) =
+        beginPairing(
+            DiscoveredDevice(name = host, host = host, port = port ?: DEFAULT_COMPANION_PORT),
+        )
 
     fun appendPin(digit: String) {
         val current = _state.value.pairingPin
@@ -285,6 +322,35 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         )
         connectJob = viewModelScope.launch {
             var lastError: Throwable? = null
+            var host = device.host
+            var port = device.port
+
+            suspend fun attemptConnect(): Boolean {
+                val result = runCatching { client.connect(host, port, device.credentials) }
+                result.exceptionOrNull()?.let { error ->
+                    // A tap cancels the attempt in flight and starts its own. Letting that
+                    // cancellation fall through as a failure meant the dying job wrote
+                    // "StandaloneCoroutine was cancelled" into the banner, dropped the screen to
+                    // Retry, and filed a bug report — all on top of the connect that replaced it,
+                    // which was at that moment half way through a handshake.
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    lastError = error
+                    return false
+                }
+                lostReconnects = 0
+                _state.value = _state.value.copy(
+                    connection = ConnectionState.Connected,
+                    power = client.powerState,
+                    controls = client.mediaControlFlags,
+                    // Surfaced rather than swallowed: a step that failed but did not stop the
+                    // connection is exactly the kind of thing that is invisible until some
+                    // button quietly does nothing.
+                    error = client.connectWarnings.takeIf { it.isNotEmpty() }
+                        ?.joinToString("; ", prefix = "Connected, but "),
+                )
+                return true
+            }
+
             // The first go plus two automatic retries. A television that has just dropped the
             // link often refuses the next pair-verify for a moment while it tears down its own
             // session, and one failed attempt is not evidence of anything.
@@ -299,25 +365,39 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     // land inside the same refusal — three failures that are really one.
                     delay(RETRY_DELAY_MS shl (attempt - 1))
                 }
-                val result = runCatching {
-                    client.connect(device.host, device.port, device.credentials)
-                }
-                if (result.isSuccess) {
-                    lostReconnects = 0
-                    _state.value = _state.value.copy(
-                        connection = ConnectionState.Connected,
-                        power = client.powerState,
-                        controls = client.mediaControlFlags,
-                        // Surfaced rather than swallowed: a step that failed but did not stop
-                        // the connection is exactly the kind of thing that is invisible until
-                        // some button quietly does nothing.
-                        error = client.connectWarnings.takeIf { it.isNotEmpty() }
-                            ?.joinToString("; ", prefix = "Connected, but "),
-                    )
-                    return@launch
-                }
-                lastError = result.exceptionOrNull()
+                if (attemptConnect()) return@launch
             }
+
+            // Nobody home at the stored address. The obvious reason is that it is no longer the
+            // television's address — a DHCP lease expires while the set is unplugged and the
+            // router hands it to a laptop, and the pairing is still perfectly good three metres
+            // away at a number nothing has told this app about. So look the name up again and,
+            // if it has moved, remember the new address and try once more there.
+            //
+            // Only after the retries, never instead of them: a browse is seconds of radio, and
+            // the common failure is a television still finishing with the last session.
+            // Not for a television paired by hand: its name *is* an address, so there is no
+            // service name to look up and the browse can only ever spend six seconds finding
+            // nothing. That is six seconds added to every failed connect, on every resume.
+            if (lastError.movedAddressIsPlausible() && !isPlausibleIpv4(device.name)) {
+                _state.value = _state.value.copy(
+                    connection = ConnectionState.Connecting,
+                    error = "Looking for ${device.name} on the network…",
+                )
+                val found = discovery.addressOf(device.name)
+                if (found != null && (found.host != host || found.port != port)) {
+                    Trace.step("${device.name} moved from $host to ${found.host}")
+                    prefs.updateAddress(device.id, found.host, found.port)
+                    host = found.host
+                    port = found.port
+                    // Published now rather than on success: the address in prefs has already
+                    // changed, and a device row still showing the old one after a failure is the
+                    // list disagreeing with what the app will do next time.
+                    _state.value = _state.value.copy(error = null, paired = prefs.devices())
+                    if (attemptConnect()) return@launch
+                }
+            }
+
             // Worth offering a report for. Every attempt is exhausted at this point, so this is
             // not a hiccup — and the banner it also writes is gone the moment the screen changes,
             // which is how a reconnect that never works goes unreported for a fortnight.
@@ -515,6 +595,23 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
         client.disconnect()
     }
+}
+
+/**
+ * Whether this failure is the kind an address change would explain.
+ *
+ * Nothing answering at all, or something answering too slowly to be a set on the same LAN. A
+ * pairing the television refused, or a handshake that got a real reply and then went wrong, is
+ * not a moved address — the set is right there and re-browsing for it would only add six seconds
+ * to a failure that has already been diagnosed.
+ */
+private fun Throwable?.movedAddressIsPlausible(): Boolean = when (this) {
+    is java.net.ConnectException,
+    is java.net.UnknownHostException,
+    is java.net.NoRouteToHostException,
+    is java.net.SocketTimeoutException,
+    -> true
+    else -> false
 }
 
 /** Protocol errors already read well; anything else gets its class name stripped. */

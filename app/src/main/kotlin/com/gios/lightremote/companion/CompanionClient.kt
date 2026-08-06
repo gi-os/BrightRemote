@@ -3,6 +3,7 @@ package com.gios.lightremote.companion
 import com.gios.lightremote.proto.RtiPayloads
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -82,6 +83,34 @@ class CompanionClient(
         const val TOUCHPAD_SIZE = 1000
         private const val TOUCH_INTERVAL_MS = 16L
         private const val DEFAULT_SKIP_SECONDS = 15.0
+
+        /**
+         * How long a tap holds the key down.
+         *
+         * A real remote is pressed for about a tenth of a second. DOWN and UP back to back is a
+         * press lasting however long a round trip happens to take, which on a quiet LAN is a
+         * couple of milliseconds — short enough that the television can miss it. Select already
+         * carried a dwell of its own for exactly this reason; the rest get one too, rather than
+         * relying on the network being slow enough to pass for a finger.
+         */
+        private const val PRESS_DWELL_MS = 30L
+
+        /** See [hid]: a button lands quickly or not at all, and it holds up the ones behind it. */
+        private const val HID_TIMEOUT_MS = 2_000L
+
+        /** See [unacknowledged]. */
+        private const val IGNORED_PRESSES_BEFORE_COMPLAINT = 3
+
+        /**
+         * How long a queued press is still worth sending.
+         *
+         * Presses are serialised, so a television that has stopped answering costs each one four
+         * seconds of timeouts while the taps behind it wait their turn. Ten impatient taps at a
+         * remote that feels dead is then forty seconds of backlog that all arrives at once when
+         * the link recovers — the television leaps ten rows, which is worse than the taps having
+         * done nothing. Anything older than this was aimed at a screen that has since moved on.
+         */
+        private const val PRESS_STALE_MS = 1_000L
     }
 
     private var connection: CompanionConnection? = null
@@ -346,27 +375,102 @@ class CompanionClient(
      */
     private val buttonLock = Mutex()
 
-    private suspend fun hid(down: Boolean, command: HidCommand) {
-        requireSession().request(
-            "_hidC",
-            linkedMapOf("_hBtS" to (if (down) 1L else 2L), "_hidC" to command.value),
-        )
+    /**
+     * Half a button press. Never throws, and never skips the other half.
+     *
+     * Two deliberate departures from every other request in this class.
+     *
+     * **A missing reply is not an error.** `_hidC` is answered by the television, but not always
+     * and not reliably — a set that is busy, redrawing, or waking a screensaver will take the key
+     * and say nothing about it. Treating that as a failure produced "no answer to _hidC" on a
+     * press that had in fact worked, which is worse than saying nothing: the button did its job
+     * and the app called it broken. The frame going out is the part that matters; the
+     * acknowledgement is not load-bearing, so a timeout here is traced and swallowed.
+     *
+     * **Two seconds, not eight.** A button either lands within a few hundred milliseconds or it
+     * is not going to, and because presses are serialised, a press stuck waiting out the default
+     * timeout holds up every other button behind it. Eight seconds of a dead remote is how one
+     * unanswered frame turned into "the whole thing stopped responding".
+     */
+    private suspend fun hid(down: Boolean, command: HidCommand, tolerant: Boolean = true) {
+        // Outside the runCatching, deliberately. Not being connected at all is a real error and
+        // the caller should hear about it; only the *reply* is optional.
+        val session = requireSession()
+        runCatching {
+            session.request(
+                "_hidC",
+                linkedMapOf("_hBtS" to (if (down) 1L else 2L), "_hidC" to command.value),
+                timeoutMs = HID_TIMEOUT_MS,
+            )
+        }.onFailure { error ->
+            // Cancellation is not a protocol failure and must not be swallowed — swallowing it
+            // is how a coroutine that has been told to stop carries on.
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            Trace.problem("no acknowledgement for ${command.name} ${if (down) "down" else "up"}", error)
+            // Power is the exception. Sleep and Wake are not buttons whose effect you can see on
+            // the panel — the whole point of pressing one is that the television across the room
+            // changes state, and a set that refuses Sleep (common enough where the audio goes out
+            // to a receiver) has to say so rather than leave a three-second hold looking ignored.
+            if (!tolerant) throw error
+            unacknowledged++
+            if (unacknowledged == IGNORED_PRESSES_BEFORE_COMPLAINT) onPressesIgnored?.invoke()
+        }.onSuccess {
+            unacknowledged = 0
+        }
     }
 
+    /**
+     * How many presses in a row can go unacknowledged before somebody is told.
+     *
+     * One is nothing — the television was busy. A run of them means the link is up as far as the
+     * socket is concerned and useless as far as the remote is concerned, and there is no other
+     * signal for that: the frames go out, nothing comes back, and every button silently does
+     * nothing. Reset by the first press that is answered.
+     */
+    private var unacknowledged = 0
+
+    /** Raised once when a run of presses has gone unanswered. */
+    var onPressesIgnored: (() -> Unit)? = null
+
+    /**
+     * A press, with the release guaranteed.
+     *
+     * The release is in a `finally` because a key the television believes is still held is the
+     * worst state this app can leave it in — tvOS starts repeating it, so one Back that failed
+     * halfway becomes a screen that keeps going back on its own. Before, a DOWN that threw took
+     * the UP with it and left exactly that.
+     */
     suspend fun press(command: HidCommand) {
         // Nudging the volume by hand is an implicit unmute, so the remembered level goes.
         if (command == HidCommand.VolumeUp || command == HidCommand.VolumeDown) clearMute()
+        val queuedAt = System.nanoTime()
         buttonLock.withLock {
-            hid(true, command)
-            hid(false, command)
+            // Stale by the time its turn came. See [PRESS_STALE_MS].
+            if ((System.nanoTime() - queuedAt) / 1_000_000 > PRESS_STALE_MS) {
+                Trace.problem("dropped a stale ${command.name}", null)
+                return
+            }
+            try {
+                hid(true, command)
+                delay(PRESS_DWELL_MS)
+            } finally {
+                // NonCancellable, or the release is skipped precisely when it matters most: a
+                // suspend call in a finally block of a cancelled coroutine throws before it runs,
+                // and cancellation mid-press is the ordinary case here — leaving a screen tears
+                // the wheel's press down with it.
+                withContext(NonCancellable) { runCatching { hid(false, command) } }
+            }
         }
     }
 
     suspend fun hold(command: HidCommand, durationMs: Long = 1000) {
         buttonLock.withLock {
-            hid(true, command)
-            delay(durationMs)
-            hid(false, command)
+            try {
+                hid(true, command)
+                delay(durationMs)
+            } finally {
+                withContext(NonCancellable) { runCatching { hid(false, command) } }
+            }
         }
     }
 
@@ -375,9 +479,9 @@ class CompanionClient(
         press(command)
     }
 
-    suspend fun turnOn() = hid(false, HidCommand.Wake)
+    suspend fun turnOn() = buttonLock.withLock { hid(false, HidCommand.Wake, tolerant = false) }
 
-    suspend fun turnOff() = hid(false, HidCommand.Sleep)
+    suspend fun turnOff() = buttonLock.withLock { hid(false, HidCommand.Sleep, tolerant = false) }
 
     /** The control-centre overlay is PageDown, oddly enough. */
     suspend fun controlCenter() = press(HidCommand.PageDown)
@@ -496,22 +600,56 @@ class CompanionClient(
 
     private var touchPump: Job? = null
 
+    private suspend fun sendTouch(sample: TouchSample) {
+        runCatching {
+            session?.sendEvent(
+                "_hidT",
+                linkedMapOf(
+                    "_ns" to sample.nanos,
+                    "_tFg" to 1L,
+                    "_cx" to sample.x.coerceIn(0, TOUCHPAD_SIZE).toLong(),
+                    "_tPh" to sample.phase.value,
+                    "_cy" to sample.y.coerceIn(0, TOUCHPAD_SIZE).toLong(),
+                ),
+            )
+        }
+    }
+
+    /**
+     * Drain the queue, skipping over stale positions.
+     *
+     * The queue keeps the samples in the order the finger made them, which is what stops the
+     * television reading a drag as a flick. What it cannot do on its own is stay *current*: if
+     * the link runs slower than the finger, samples pile up and every one of them still gets
+     * sent, so the pointer is replaying where your thumb was a second ago and carries on moving
+     * after you have lifted it. A hundred-deep queue is nearly two seconds of that.
+     *
+     * So a [TouchPhase.Hold] with more Holds already waiting behind it is thrown away — it is a
+     * position that has been superseded, and the newest one is the truth. Nothing else is ever
+     * skipped: a dropped Release leaves the television believing a finger is still down, and a
+     * dropped Press means the drag never opened. The result self-corrects — the further behind
+     * the link falls, the more intermediate positions collapse, so latency stays bounded instead
+     * of growing for as long as the gesture lasts.
+     */
     private fun startTouchPump() {
         if (touchPump?.isActive == true) return
         touchPump = scope.launch {
-            for (sample in touchQueue) {
-                runCatching {
-                    session?.sendEvent(
-                        "_hidT",
-                        linkedMapOf(
-                            "_ns" to sample.nanos,
-                            "_tFg" to 1L,
-                            "_cx" to sample.x.coerceIn(0, TOUCHPAD_SIZE).toLong(),
-                            "_tPh" to sample.phase.value,
-                            "_cy" to sample.y.coerceIn(0, TOUCHPAD_SIZE).toLong(),
-                        ),
-                    )
+            while (true) {
+                var current = touchQueue.receive()
+                var next: TouchSample? = null
+                if (current.phase == TouchPhase.Hold) {
+                    while (true) {
+                        val queued = touchQueue.tryReceive().getOrNull() ?: break
+                        if (queued.phase != TouchPhase.Hold) {
+                            // Not skippable. Send the newest position, then this, in order.
+                            next = queued
+                            break
+                        }
+                        current = queued
+                    }
                 }
+                sendTouch(current)
+                next?.let { sendTouch(it) }
             }
         }
     }
@@ -563,9 +701,12 @@ class CompanionClient(
     /** A tap on the trackpad, which the TV wants as a Select press plus a click sample. */
     suspend fun click() {
         buttonLock.withLock {
-            hid(true, HidCommand.Select)
-            delay(20)
-            hid(false, HidCommand.Select)
+            try {
+                hid(true, HidCommand.Select)
+                delay(PRESS_DWELL_MS)
+            } finally {
+                withContext(NonCancellable) { runCatching { hid(false, HidCommand.Select) } }
+            }
         }
         touch(TOUCHPAD_SIZE, TOUCHPAD_SIZE, TouchPhase.Click)
     }

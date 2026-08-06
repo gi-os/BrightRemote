@@ -27,6 +27,7 @@ import com.gios.lightremote.hw.LocalVolumeBus
 import com.gios.lightremote.hw.LocalWheelBus
 import com.gios.lightremote.hw.VolumeBus
 import com.gios.lightremote.hw.WheelBus
+import com.gios.lightremote.ui.AddressScreen
 import com.gios.lightremote.ui.AppsScreen
 import com.gios.lightremote.ui.DevicesScreen
 import com.gios.lightremote.ui.ForgetDeviceScreen
@@ -159,6 +160,20 @@ class MainActivity : ComponentActivity() {
                                     managing = device
                                     nav.navigate("forget")
                                 },
+                                onEnterAddress = { nav.navigate("address") },
+                            )
+                        }
+                        composable("address") {
+                            AddressScreen(
+                                vm = vm,
+                                // Straight on to the PIN, replacing this screen: the address was
+                                // a step on the way to pairing, and backing out of the code onto
+                                // a keypad you have already finished with is nobody's intent.
+                                onPair = {
+                                    nav.popBackStack("devices", inclusive = false)
+                                    nav.navigate("pair")
+                                },
+                                onCancel = { nav.popBackStack("devices", inclusive = false) },
                             )
                         }
                         composable("pair") {

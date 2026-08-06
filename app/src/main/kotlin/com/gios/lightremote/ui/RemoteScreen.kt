@@ -4,14 +4,15 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,7 +33,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gios.lightremote.R
@@ -155,20 +155,26 @@ fun RemoteScreen(
                 Box(Modifier.zIndex(1f)) {
                     LightIconBar(
                         listOf(
-                            // Tap is back; hold is the menu. tvOS has no separate menu button
-                            // — holding back is how you get the overlay — so there is no
-                            // reason for this app to carry one either.
+                            // Back is a tap and nothing else.
+                            //
+                            // It used to carry Control Centre on a long press, which was wrong
+                            // twice over. Wrong on the television, where Control Centre is a
+                            // held *Home*, not a held Back. And wrong in the hand: Compose
+                            // calls anything past ~500 ms a long press, which is an ordinary
+                            // careful tap on a small icon while you are looking at the screen
+                            // across the room — so pressing Back opened an overlay instead of
+                            // going back, and Back "did not work".
                             BarIcon(
                                 R.drawable.ic_back_white,
-                                "Back, hold for menu",
+                                "Back",
                                 enabled = connected,
-                                onLongClick = { vm.controlCenter() },
                             ) { vm.press(HidCommand.Menu) },
+                            // Held Home is Control Centre, which is what tvOS does with it.
                             BarIcon(
                                 R.drawable.ic_home_white,
-                                "Home, hold for app switcher",
+                                "Home, hold for Control Centre",
                                 enabled = connected,
-                                onLongClick = { vm.hold(HidCommand.Home) },
+                                onLongClick = { vm.controlCenter() },
                             ) { vm.press(HidCommand.Home) },
                             // Holding it skips the drawer and goes straight to typing.
                             // Searching is the one thing you arrive at the phone already
@@ -225,18 +231,37 @@ fun RemoteScreen(
 }
 
 /**
+ * How much of the television's touch surface one panel-width drag covers.
+ *
+ * Mapping the panel one-to-one onto the surface was the overshoot. A Siri Remote's pad is about
+ * 35 mm across and is stroked with the ball of a thumb; the LPIII panel is nearly twice that and
+ * is dragged with a whole finger, so the same gesture arrived as a far longer, far faster one —
+ * and tvOS reads a long fast stroke as a flick, which does not move a row, it throws the list.
+ *
+ * At 0.5 a drag across the full panel is exactly half the surface, which is also the largest gain
+ * that keeps every part of the gesture live: the origin sits at the middle of the surface, so
+ * anything above a half saturates before the finger reaches the far edge, and the last of the
+ * travel — on the one gesture where somebody is deliberately asking for maximum throw — would
+ * silently do nothing. It halves the *velocity* the television infers too, which is the part that
+ * actually stops the flick.
+ */
+private const val SWIPE_GAIN = 0.5f
+
+/**
  * The swipe surface: the whole area, no border, nothing drawn.
  *
- * Coordinates map straight onto the TV's 1000x1000 touch surface, and samples are throttled
- * to roughly one per 16ms — sending every pointer event floods the link and the TV reads the
- * burst as a flick, so a small drag overshoots by several rows.
+ * Coordinates are relative to where the finger landed, taken from the middle of the television's
+ * surface and scaled by [SWIPE_GAIN]. Relative rather than absolute because the panel is not a
+ * scale model of the pad — where on the glass you happen to start says nothing, only how far you
+ * then move. Samples are throttled to roughly one per 16 ms; sending every pointer event floods
+ * the link, and the client collapses stale positions if it falls behind anyway.
  *
- * Nothing at all is sent until the finger has travelled past the platform's touch slop. That
- * is what stops the phantom scrolling: a tap is never perfectly still, and the previous
- * version opened the gesture on touch-down and then forwarded every wobble, so a thumb that
- * rolled a few pixels while pressing sent the TV a swipe nobody asked for. Now a press that
- * stays inside slop is only ever a click, and one that leaves it opens the drag from where the
- * finger actually started rather than from wherever it happened to cross the threshold.
+ * Nothing at all is sent until the finger has travelled past the platform's touch slop. That is
+ * what stops the phantom scrolling: a tap is never perfectly still, and an earlier version opened
+ * the gesture on touch-down and then forwarded every wobble, so a thumb that rolled a few pixels
+ * while pressing sent the TV a swipe nobody asked for. Now a press that stays inside slop is only
+ * ever a click, and one that leaves it opens the drag from where the finger actually started
+ * rather than from wherever it happened to cross the threshold.
  */
 @Composable
 private fun Touchpad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
@@ -249,82 +274,115 @@ private fun Touchpad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     tick(context)
                     val slop = viewConfiguration.touchSlop
-                    val scaleX = CompanionClient.TOUCHPAD_SIZE / size.width.toFloat()
-                    val scaleY = CompanionClient.TOUCHPAD_SIZE / size.height.toFloat()
+                    val centre = CompanionClient.TOUCHPAD_SIZE / 2f
+                    val scaleX = CompanionClient.TOUCHPAD_SIZE / size.width.toFloat() * SWIPE_GAIN
+                    val scaleY = CompanionClient.TOUCHPAD_SIZE / size.height.toFloat() * SWIPE_GAIN
                     val startX = down.position.x
                     val startY = down.position.y
+
+                    fun padX(x: Float) =
+                        (centre + (x - startX) * scaleX).toInt().coerceIn(0, CompanionClient.TOUCHPAD_SIZE)
+                    fun padY(y: Float) =
+                        (centre + (y - startY) * scaleY).toInt().coerceIn(0, CompanionClient.TOUCHPAD_SIZE)
+
                     var dragging = false
                     var lastSent = 0L
+                    var lastX = startX
+                    var lastY = startY
 
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            lastX = change.position.x
+                            lastY = change.position.y
 
-                        if (!change.pressed) {
-                            if (dragging) {
-                                vm.touch(
-                                    (change.position.x * scaleX).toInt(),
-                                    (change.position.y * scaleY).toInt(),
-                                    TouchPhase.Release,
-                                )
-                            } else {
-                                // Never left slop, so it was a tap all along and the TV has
-                                // heard nothing about it yet.
-                                vm.click()
+                            if (!change.pressed) {
+                                if (dragging) {
+                                    vm.touch(padX(lastX), padY(lastY), TouchPhase.Release)
+                                    dragging = false
+                                } else {
+                                    // Never left slop, so it was a tap all along and the TV has
+                                    // heard nothing about it yet.
+                                    vm.click()
+                                }
+                                break
                             }
-                            break
-                        }
 
-                        if (!dragging) {
-                            val dx = change.position.x - startX
-                            val dy = change.position.y - startY
-                            if (kotlin.math.hypot(dx, dy) < slop) continue
-                            dragging = true
-                            vm.touch(
-                                (startX * scaleX).toInt(),
-                                (startY * scaleY).toInt(),
-                                TouchPhase.Press,
-                            )
-                        }
+                            if (!dragging) {
+                                val dx = lastX - startX
+                                val dy = lastY - startY
+                                if (kotlin.math.hypot(dx, dy) < slop) continue
+                                dragging = true
+                                // Opens at the centre by construction, since this is the origin.
+                                vm.touch(padX(startX), padY(startY), TouchPhase.Press)
+                            }
 
-                        val now = System.currentTimeMillis()
-                        if (now - lastSent >= 16) {
-                            vm.touch(
-                                (change.position.x * scaleX).toInt(),
-                                (change.position.y * scaleY).toInt(),
-                                TouchPhase.Hold,
-                            )
-                            lastSent = now
+                            val now = System.currentTimeMillis()
+                            if (now - lastSent >= 16) {
+                                vm.touch(padX(lastX), padY(lastY), TouchPhase.Hold)
+                                lastSent = now
+                            }
                         }
+                    } finally {
+                        // The finger going away without a Release is not hypothetical: the
+                        // pointer can be cancelled, and the pad itself is swapped out the moment
+                        // the connection drops or the drawer opens. Leaving mid-drag would leave
+                        // the television believing a finger is still down — the touchpad's
+                        // version of a stuck key.
+                        if (dragging) vm.touch(padX(lastX), padY(lastY), TouchPhase.Release)
                     }
                 }
             },
     )
 }
 
-/** Up/down/left/right around a centre Select. */
+/**
+ * Up/down/left/right around a centre Select, filling everything it is given.
+ *
+ * The buttons were fixed at seven grid units by four and floated in the middle of the panel,
+ * which left most of the pad area doing nothing and the arrows small enough to miss while
+ * looking at the television rather than at the phone. They are weighted now: three rows, three
+ * columns, every cell as large as the space allows. Nothing here has a border — the layout is
+ * the affordance, and on a panel this size an outline around a target that already fills a third
+ * of the screen is decoration.
+ *
+ * The corners are deliberately dead rather than mapped to the nearest arrow. A diagonal thumb on
+ * a remote means "I was not sure", and guessing on its behalf is how the focus ends up somewhere
+ * nobody chose.
+ */
 @Composable
 private fun DirectionPad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
-    Column(
-        modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        PadButton({ vm.press(HidCommand.Up) }) { ArrowIcon(R.drawable.ic_up_white) }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            PadButton({ vm.press(HidCommand.Left) }) { ArrowIcon(R.drawable.ic_back_white) }
-            Box(
-                Modifier
-                    .size(7f.gridDp())
-                    .border(1.dp, LightColors.Rule)
-                    .lightClickable { vm.press(HidCommand.Select) },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("OK", style = MaterialTheme.typography.titleMedium, color = LightColors.Content)
+    Column(modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().weight(1f)) {
+            Spacer(Modifier.weight(1f))
+            PadButton(Modifier.weight(2f).fillMaxHeight(), { vm.press(HidCommand.Up) }) {
+                ArrowIcon(R.drawable.ic_up_white)
             }
-            PadButton({ vm.press(HidCommand.Right) }) { ArrowIcon(R.drawable.ic_arrow_right_white) }
+            Spacer(Modifier.weight(1f))
         }
-        PadButton({ vm.press(HidCommand.Down) }) { ArrowIcon(R.drawable.ic_down_white) }
+        Row(Modifier.fillMaxWidth().weight(1f)) {
+            PadButton(Modifier.weight(1f).fillMaxHeight(), { vm.press(HidCommand.Left) }) {
+                ArrowIcon(R.drawable.ic_back_white)
+            }
+            PadButton(Modifier.weight(2f).fillMaxHeight(), { vm.press(HidCommand.Select) }) {
+                Text(
+                    "OK",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = LightColors.Content,
+                )
+            }
+            PadButton(Modifier.weight(1f).fillMaxHeight(), { vm.press(HidCommand.Right) }) {
+                ArrowIcon(R.drawable.ic_arrow_right_white)
+            }
+        }
+        Row(Modifier.fillMaxWidth().weight(1f)) {
+            Spacer(Modifier.weight(1f))
+            PadButton(Modifier.weight(2f).fillMaxHeight(), { vm.press(HidCommand.Down) }) {
+                ArrowIcon(R.drawable.ic_down_white)
+            }
+            Spacer(Modifier.weight(1f))
+        }
     }
 }
 
@@ -437,17 +495,19 @@ private fun ArrowIcon(resource: Int, rotation: Float = 0f) {
         contentDescription = null,
         tint = LightColors.Content,
         modifier = Modifier
-            .size(2.6f.gridDp())
+            .size(3.4f.gridDp())
             .graphicsLayer(rotationZ = rotation),
     )
 }
 
 @Composable
-private fun PadButton(onClick: () -> Unit, content: @Composable () -> Unit) {
+private fun PadButton(
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    content: @Composable () -> Unit,
+) {
     Box(
-        Modifier
-            .size(width = 7f.gridDp(), height = 4f.gridDp())
-            .lightClickable(onClick = onClick),
+        modifier.lightClickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { content() }
 }

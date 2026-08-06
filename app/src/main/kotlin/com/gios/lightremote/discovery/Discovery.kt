@@ -3,10 +3,15 @@ package com.gios.lightremote.discovery
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import android.util.Log
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** One Apple TV found on the network. */
 data class DiscoveredDevice(
@@ -50,7 +55,32 @@ class Discovery(context: Context) {
         private const val PAIRING_WITH_PIN_MASK = 0x00000200L
     }
 
-    private val nsd = context.applicationContext.getSystemService(Context.NSD_SERVICE) as NsdManager
+    private val app = context.applicationContext
+    private val nsd = app.getSystemService(Context.NSD_SERVICE) as NsdManager
+    private val wifi = app.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+
+    /**
+     * Let multicast through for as long as we are browsing.
+     *
+     * Wi-Fi hardware drops multicast and broadcast frames not addressed to it, because doing
+     * otherwise would keep the radio awake for every packet on the network. mDNS *is* multicast,
+     * so without a lock the responses never arrive: the browse starts, reports no error, and
+     * finds nothing. `NsdManager` takes a lock of its own on most builds, which is why this works
+     * on stock Android and why the gap is easy to miss — LightOS is not stock, and "No Apple TV
+     * found / both devices need to be on the same Wi-Fi network", on a phone that plainly was, is
+     * what the gap looks like from the sofa.
+     *
+     * Reference counted so that acquire and release pair up cleanly per browse; overlapping
+     * browses each hold their own lock, which is fine — the radio stays open while any of them
+     * does. Failure is survivable:
+     * without the permission or on a build that refuses, discovery is exactly as good as before.
+     */
+    private fun acquireMulticast(): WifiManager.MulticastLock? = runCatching {
+        wifi?.createMulticastLock("LightRemote-mdns")?.apply {
+            setReferenceCounted(true)
+            acquire()
+        }
+    }.getOrNull()
 
     /**
      * Emits the set of devices found so far, re-emitting on every change.
@@ -118,11 +148,35 @@ class Discovery(context: Context) {
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
         }
 
-        nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+        val multicast = acquireMulticast()
+        // A throw here never reaches awaitClose, so it would leak the lock and hold the radio
+        // awake for the life of the process.
+        try {
+            nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+        } catch (t: Throwable) {
+            runCatching { if (multicast?.isHeld == true) multicast.release() }
+            throw t
+        }
         publish()
 
         awaitClose {
             runCatching { nsd.stopServiceDiscovery(discoveryListener) }
+            runCatching { if (multicast?.isHeld == true) multicast.release() }
         }
     }
+
+    /**
+     * Wait for one particular television to answer, or give up.
+     *
+     * For a device already paired, whose stored address the router has since handed to something
+     * else. Matched on the service name because that is the identity the pairing is filed under;
+     * the address is the thing being looked up.
+     */
+    suspend fun addressOf(name: String, timeoutMs: Long = 6_000): DiscoveredDevice? =
+        withTimeoutOrNull(timeoutMs) {
+            devices()
+                .catch { }
+                .mapNotNull { found -> found.firstOrNull { it.name == name } }
+                .firstOrNull()
+        }
 }

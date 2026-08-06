@@ -20,6 +20,13 @@
     <uses-permission
         android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
+    <!--
+      Wi-Fi hardware drops multicast frames not addressed to it, so the radio can sleep. mDNS is
+      multicast, so a browse held without a MulticastLock can start cleanly, report no error, and
+      never hear a single reply. Normal protection level: granted at install, no dialog.
+    -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <application
         android:allowBackup="false"
