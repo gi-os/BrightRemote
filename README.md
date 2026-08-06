@@ -192,7 +192,7 @@ rebindable. It does not take this app's own scrolling away — bare turns pass s
 through to `com.gios.*`.
 
 ```bash
-adb install -r BrightControl-v1.0.x.apk
+adb install -r LightControl-v1.0.x.apk
 
 # NOTE: this replaces the accessibility-service list — colon-join if you also run
 # LightVoice's push-to-talk.
@@ -300,7 +300,7 @@ The link is encrypted after pair-verify and can't be watched from outside, so th
 narrates itself:
 
 ```
-adb logcat -s BrightRemote
+adb logcat -s LightRemote
 ```
 
 Every frame in/out (type, length, whether encrypted), every request's transaction id, and
