@@ -3,6 +3,17 @@
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
 released version: **v1.14.x**; the tracked source is at `1.15.0` pending its release tag.
 
+## Install via BrightMarket
+
+<p align="center">
+  <img src="https://gi-os.github.io/brightmarket-index/assets/brightmarket-qr.png" alt="Scan to open BrightMarket" width="180" />
+</p>
+
+Scan the code above, or visit
+**[gi-os.github.io/brightmarket-index/browse.html](https://gi-os.github.io/brightmarket-index/browse.html)**, to install
+and keep this app updated through **BrightMarket** — no Play Store, no PC
+required.
+
 Speaks Apple's **Companion** protocol directly — mDNS discovery, HAP pairing with the
 four-digit code on screen, then an encrypted session. No server, no bridge, no companion
 app on another device, no SDK: the Light SDK sandbox has no raw-socket or mDNS access, so
