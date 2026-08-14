@@ -102,6 +102,17 @@ class Prefs(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_PREFER_TOUCHPAD, value).apply()
 
     /**
+     * Whether the side wheel walks the focus sideways instead of up and down.
+     *
+     * Vertical is the default — most of tvOS is lists — but the home screen's rows and every
+     * app's shelf are the other axis, and reaching for the pad to cross a row defeats the
+     * wheel. Toggled from the top bar, remembered per install.
+     */
+    var wheelHorizontal: Boolean
+        get() = prefs.getBoolean(KEY_WHEEL_HORIZONTAL, false)
+        set(value) = prefs.edit().putBoolean(KEY_WHEEL_HORIZONTAL, value).apply()
+
+    /**
      * Bundle ids pinned to the top of the app list.
      *
      * Kept per install rather than per device: the handful of apps worth pinning are the ones
@@ -120,6 +131,7 @@ class Prefs(context: Context) {
         const val KEY_DEVICE_IDS = "devices"
         const val KEY_LAST_DEVICE = "last_device"
         const val KEY_PREFER_TOUCHPAD = "prefer_touchpad"
+        const val KEY_WHEEL_HORIZONTAL = "wheel_horizontal"
         const val KEY_PINNED = "pinned_apps"
     }
 }

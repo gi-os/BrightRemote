@@ -1,0 +1,30 @@
+<!-- The side wheel walking the focus up and down: the back chevron, rotated to point up
+     and down, one above the other. Same path as ic_back_white so the weight matches. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="30.0dp"
+    android:height="30.0dp"
+    android:viewportWidth="30.0"
+    android:viewportHeight="30.0">
+    <group
+        android:pivotX="15"
+        android:pivotY="15"
+        android:rotation="90"
+        android:scaleX="0.62"
+        android:scaleY="0.62"
+        android:translateY="-6.5">
+        <path
+            android:pathData="M 14.0,4.0 L 5.718,12.282 L 3.0,15.0 L 5.718,17.718 L 14.0,26.0 L 16.118,23.6 L 7.435,15.0 L 16.118,6.3 L 14.0,4.0 Z"
+            android:fillColor="#FFFFFFFF" />
+    </group>
+    <group
+        android:pivotX="15"
+        android:pivotY="15"
+        android:rotation="-90"
+        android:scaleX="0.62"
+        android:scaleY="0.62"
+        android:translateY="6.5">
+        <path
+            android:pathData="M 14.0,4.0 L 5.718,12.282 L 3.0,15.0 L 5.718,17.718 L 14.0,26.0 L 16.118,23.6 L 7.435,15.0 L 16.118,6.3 L 14.0,4.0 Z"
+            android:fillColor="#FFFFFFFF" />
+    </group>
+</vector>

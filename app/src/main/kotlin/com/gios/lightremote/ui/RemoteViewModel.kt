@@ -16,6 +16,9 @@ import com.gios.lightremote.data.PairedDevice
 import com.gios.lightremote.data.Prefs
 import com.gios.lightremote.discovery.DiscoveredDevice
 import com.gios.lightremote.discovery.Discovery
+import com.gios.light.common.report.Failure
+import com.gios.light.common.report.Reports
+import com.gios.light.common.report.Symptom
 import com.gios.light.common.report.Trouble
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -64,6 +67,13 @@ data class RemoteUiState(
     val pairingBusy: Boolean = false,
     val error: String? = null,
     val fieldText: String? = null,
+    /**
+     * What there is to send about the last drop or failed connect: the cause plus the recent
+     * wire trace. Non-null is what makes the "Send error" row appear on the disconnected
+     * screen — every disconnect, not just the ones the hourly report chip deigns to mention.
+     */
+    val reportable: String? = null,
+    val reportSent: Boolean = false,
 )
 
 class RemoteViewModel(app: Application) : AndroidViewModel(app) {
@@ -114,21 +124,29 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             Trouble.record("the Apple TV stopped acknowledging buttons")
         }
         client.onDisconnected = { cause ->
+            val detail = cause?.let { dropDetail(it) }
             _state.value = _state.value.copy(
                 connection = ConnectionState.Disconnected,
                 // A clean close is the app's own doing; only surface real failures.
                 error = cause?.let { "Lost the connection: ${it.friendlyMessage()}" },
+                reportable = detail ?: _state.value.reportable,
+                reportSent = if (detail != null) false else _state.value.reportSent,
             )
-            // A link that drops on its own gets picked back up, twice, before the Retry row
-            // becomes the user's problem. Wi-Fi hiccups and a TV waking from sleep both look
-            // like this, and both fix themselves.
-            if (cause != null && lostReconnects < LOST_RECONNECTS && activeDeviceId != null) {
-                lostReconnects++
-                prefs.devices().firstOrNull { it.id == activeDeviceId }?.let { connect(it) }
-            } else if (cause != null && activeDeviceId != null && lostReconnects >= LOST_RECONNECTS) {
-                // Only once the automatic reconnects are spent. Anything short of that is a
-                // Wi-Fi hiccup that fixed itself, and reports of those are noise.
-                Trouble.record("the Apple TV kept dropping the connection", cause)
+            if (cause != null) {
+                // Every unexpected drop is worth offering, not just the ones left standing
+                // after the reconnects. The old rule called a self-healing drop noise — and
+                // then the link died on every play press for weeks and not one report went
+                // out, because each drop reconnected and disqualified itself. The chip still
+                // rations itself to once an hour; the Send error row on the disconnected
+                // screen is the always-available path.
+                Trouble.record("the Apple TV dropped the connection", detail)
+                // A link that drops on its own gets picked back up, twice, before the Retry
+                // row becomes the user's problem. Wi-Fi hiccups and a TV waking from sleep
+                // both look like this, and both fix themselves.
+                if (lostReconnects < LOST_RECONNECTS && activeDeviceId != null) {
+                    lostReconnects++
+                    prefs.devices().firstOrNull { it.id == activeDeviceId }?.let { connect(it) }
+                }
             }
         }
     }
@@ -342,6 +360,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     connection = ConnectionState.Connected,
                     power = client.powerState,
                     controls = client.mediaControlFlags,
+                    // A fresh session makes the old drop history, not evidence. Left in
+                    // place, a deliberate disconnect a day later would offer to report it.
+                    reportable = null,
+                    reportSent = false,
                     // Surfaced rather than swallowed: a step that failed but did not stop the
                     // connection is exactly the kind of thing that is invisible until some
                     // button quietly does nothing.
@@ -401,10 +423,13 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             // Worth offering a report for. Every attempt is exhausted at this point, so this is
             // not a hiccup — and the banner it also writes is gone the moment the screen changes,
             // which is how a reconnect that never works goes unreported for a fortnight.
-            lastError?.let { Trouble.record("could not connect to the Apple TV", it) }
+            val detail = lastError?.let { dropDetail(it) }
+            detail?.let { Trouble.record("could not connect to the Apple TV", it) }
             _state.value = _state.value.copy(
                 connection = ConnectionState.Disconnected,
                 error = lastError?.friendlyMessage(),
+                reportable = detail ?: _state.value.reportable,
+                reportSent = if (detail != null) false else _state.value.reportSent,
             )
         }
     }
@@ -489,6 +514,51 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissError() {
         _state.value = _state.value.copy(error = null)
+    }
+
+    /**
+     * The cause plus the recent wire narrative, ready to put in a report.
+     *
+     * The exception alone says "closed" and nothing else; the trace says what the last thing
+     * on the wire was, which is the difference between "it disconnects when Plex starts
+     * playing" being fixable and being a shrug.
+     */
+    private fun dropDetail(cause: Throwable): String =
+        "${cause::class.java.simpleName}: ${cause.message}\n\nWire trace (newest last):\n${Trace.tail()}"
+
+    /**
+     * File the last drop as a bug report, straight from the disconnected screen.
+     *
+     * Deliberately not routed through [Trouble]: that raises a chip once an hour per failure,
+     * which is the right manners for a feed that breaks every refresh and the wrong ones for
+     * a link that needs diagnosing — the second drop in five minutes is exactly the one worth
+     * sending. Queued on disk first, like every report, so it survives being offline.
+     */
+    fun sendDropReport() {
+        val detail = _state.value.reportable ?: return
+        if (_state.value.reportSent) return
+        _state.value = _state.value.copy(reportSent = true)
+        val context = getApplication<Application>()
+        viewModelScope.launch {
+            runCatching {
+                Reports.submit(
+                    context,
+                    Reports.compose(
+                        context = context,
+                        symptom = Symptom.Other,
+                        note = "the connection to the Apple TV dropped",
+                        screen = "remote",
+                        crash = null,
+                        failure = Failure("keep the connection to the Apple TV", detail),
+                    ),
+                )
+            }.onFailure { error ->
+                _state.value = _state.value.copy(
+                    reportSent = false,
+                    error = error.friendlyMessage(),
+                )
+            }
+        }
     }
 
     // ------------------------------------------------------------------ commands
@@ -590,6 +660,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     var preferTouchpad: Boolean
         get() = prefs.preferTouchpad
         set(value) { prefs.preferTouchpad = value }
+
+    var wheelHorizontal: Boolean
+        get() = prefs.wheelHorizontal
+        set(value) { prefs.wheelHorizontal = value }
 
     override fun onCleared() {
         super.onCleared()

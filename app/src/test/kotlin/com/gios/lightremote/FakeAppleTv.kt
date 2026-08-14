@@ -83,6 +83,17 @@ class FakeAppleTv(
         thread?.interrupt()
     }
 
+    /**
+     * Hang up on the client, the way a real television does — an ordinary close, which the
+     * client sees as a clean end of stream, not an error. tvOS does this on its own schedule
+     * (starting playback is one reliable trigger), and the distinction matters: an EOF the
+     * *device* caused must reach the client as a failure, or it looks identical to the app
+     * closing its own socket and nobody reconnects or reports anything.
+     */
+    fun hangUp() {
+        runCatching { socket?.close() }
+    }
+
     // ------------------------------------------------------------------ framing
 
     /**

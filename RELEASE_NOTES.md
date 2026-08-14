@@ -1,3 +1,46 @@
+## LightRemote v1.20 — The Plex disconnect gets caught, reported, and reconnected; the wheel goes sideways
+
+### A television that hangs up no longer looks like the app hanging up on itself
+
+The disconnect that hits when a show starts playing — open something in Plex, press play, and
+the remote drops — turned out to be handled exactly backwards. tvOS closes Companion links on
+its own schedule, and starting playback is one of the moments it does it. That close arrives as
+a clean end of stream, not an error, and the session's teardown read "no error" as "we closed
+this ourselves". So the one kind of disconnect that most needed noticing got the silent
+treatment: no banner, no automatic reconnect, no offer to report it. The remote just sat there
+disconnected until you backed out and tapped the TV again.
+
+Only the session's own `closing` flag can say a teardown was deliberate now; an EOF the
+television caused is a failure like any other. Which means the existing recovery machinery
+finally applies to it: the link is picked back up automatically, twice, before Retry becomes
+your problem — so a play-press drop should now heal itself before you notice it happened.
+Two new regression tests pin the distinction down against the fake Apple TV, and the hangup
+test fails on v1.19.
+
+### Every disconnect can be sent as an error report
+
+Reporting used to wait until both automatic reconnects were spent, on the theory that a drop
+that healed itself was noise. Then the link died on every play press for weeks and not one
+report went out — each drop reconnected, and disqualified itself. So: every unexpected drop now
+raises the report chip (still rationed to once an hour, that part is manners), and the
+disconnected screen has a **Send error** row with no such manners — every single drop can be
+filed from right there, next to Retry, including the second one in five minutes, which is
+exactly the one worth sending.
+
+The report is finally worth reading, too. The protocol layer now keeps the last 150 trace
+lines — frame types, lengths, steps, timings, never payload bytes — in a ring, and the whole
+wire narrative rides along in the report body. "It disconnects when Plex starts playing" stops
+being a shrug and becomes a diagnosis.
+
+### The wheel can walk sideways
+
+A new toggle in the top bar, next to power, switches the scroll wheel between vertical and
+horizontal. Vertical is still the default — most of tvOS is lists — but the home screen's rows
+and every app's shelf run the other way, and crossing a row by reaching for the pad defeated
+the point of having a wheel. The icon shows what the wheel will do *right now* (↕ or ↔), a tap
+flips it, and the choice is remembered. Rolling the wheel up goes Left, the same "back the way
+you came" that up means in a list.
+
 ## LightRemote v1.19 — Back works, the pad is twice the size, and it can find the TV without mDNS
 
 ### "no answer to _hidC" was the app calling a working button broken

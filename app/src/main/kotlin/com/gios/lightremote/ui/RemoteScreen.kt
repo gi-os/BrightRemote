@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -66,6 +67,7 @@ fun RemoteScreen(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     var touchpad by remember { mutableStateOf(vm.preferTouchpad) }
+    var wheelHorizontal by remember { mutableStateOf(vm.wheelHorizontal) }
     var showMore by remember { mutableStateOf(false) }
     val connected = state.connection == ConnectionState.Connected
 
@@ -82,11 +84,22 @@ fun RemoteScreen(
         }
     }
 
-    // The wheel walks the tvOS focus vertically. Two notches a step, rate-limited — the sensor
-    // fires faster than a moving highlight can be read. Awaited rather than launched, so a slow
+    // The wheel walks the tvOS focus. Two notches a step, rate-limited — the sensor fires
+    // faster than a moving highlight can be read. Awaited rather than launched, so a slow
     // link slows the wheel down instead of queueing presses behind it.
+    //
+    // Which axis it walks is the top-bar toggle: vertical for lists, horizontal for the home
+    // screen's rows and every app's shelf. Sideways, a roll of the wheel *up* goes Left —
+    // up is "back the way you came" on the vertical axis, and Left is the same direction in
+    // a row. The lambda reads the state through rememberUpdatedState inside WheelSteps, so
+    // flipping the toggle takes effect on the very next notch.
     WheelSteps(active = connected) { direction ->
-        vm.pressAwait(if (direction > 0) HidCommand.Up else HidCommand.Down)
+        vm.pressAwait(
+            when {
+                wheelHorizontal -> if (direction > 0) HidCommand.Left else HidCommand.Right
+                else -> if (direction > 0) HidCommand.Up else HidCommand.Down
+            },
+        )
     }
 
     Scaffold(
@@ -98,30 +111,60 @@ fun RemoteScreen(
                 title = null,
                 onBack = onOpenDevices,
                 action = {
-                    // Power doubles as the connection indicator: dim when we don't know.
-                    //
-                    // Held for three seconds rather than tapped. It sits in the corner your
-                    // thumb reaches for on the way to the back chevron, and putting the
-                    // television to sleep by accident is the most annoying thing this app
-                    // could do. The climbing buzz is what makes three seconds bearable — it
-                    // tells you the hold is being counted rather than leaving you guessing.
-                    Box(
-                        Modifier
-                            .size(LightGrid.BAR_ICON_UNITS.gridDp())
-                            .lightHoldable(enabled = connected) { vm.togglePower() },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            painterResource(R.drawable.ic_power_white),
-                            contentDescription = "Power, hold for three seconds",
-                            tint = when {
-                                !connected -> LightColors.Faint
-                                state.power == PowerState.On -> LightColors.Content
-                                state.power == PowerState.Screensaver -> LightColors.ContentSecondary
-                                else -> LightColors.Faint
-                            },
-                            modifier = Modifier.size(LightGrid.BAR_ICON_UNITS.gridDp()),
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Which axis the wheel walks. The icon shows the current mode — a
+                        // glance answers "what will the wheel do right now" — and a tap
+                        // flips it. A preference, not a session flag: the person who lives
+                        // on the home screen's rows wants it sideways every time.
+                        Box(
+                            Modifier
+                                .size(LightGrid.BAR_ICON_UNITS.gridDp())
+                                .lightClickable {
+                                    wheelHorizontal = !wheelHorizontal
+                                    vm.wheelHorizontal = wheelHorizontal
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                painterResource(
+                                    if (wheelHorizontal) R.drawable.ic_wheel_horizontal_white
+                                    else R.drawable.ic_wheel_vertical_white,
+                                ),
+                                contentDescription = if (wheelHorizontal) {
+                                    "Wheel scrolls sideways, tap for up and down"
+                                } else {
+                                    "Wheel scrolls up and down, tap for sideways"
+                                },
+                                tint = if (connected) LightColors.Content else LightColors.Faint,
+                                modifier = Modifier.size(LightGrid.BAR_ICON_UNITS.gridDp()),
+                            )
+                        }
+                        Spacer(Modifier.width(1f.gridDp()))
+                        // Power doubles as the connection indicator: dim when we don't know.
+                        //
+                        // Held for three seconds rather than tapped. It sits in the corner your
+                        // thumb reaches for on the way to the back chevron, and putting the
+                        // television to sleep by accident is the most annoying thing this app
+                        // could do. The climbing buzz is what makes three seconds bearable — it
+                        // tells you the hold is being counted rather than leaving you guessing.
+                        Box(
+                            Modifier
+                                .size(LightGrid.BAR_ICON_UNITS.gridDp())
+                                .lightHoldable(enabled = connected) { vm.togglePower() },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                painterResource(R.drawable.ic_power_white),
+                                contentDescription = "Power, hold for three seconds",
+                                tint = when {
+                                    !connected -> LightColors.Faint
+                                    state.power == PowerState.On -> LightColors.Content
+                                    state.power == PowerState.Screensaver -> LightColors.ContentSecondary
+                                    else -> LightColors.Faint
+                                },
+                                modifier = Modifier.size(LightGrid.BAR_ICON_UNITS.gridDp()),
+                            )
+                        }
                     }
                 },
             )
@@ -217,6 +260,18 @@ fun RemoteScreen(
                     }
                     if (state.activeName != null) {
                         LightRow(label = "Retry", onClick = { vm.reconnect() })
+                        Rule()
+                    }
+                    // Every disconnect can be sent, from right here. The report chip rations
+                    // itself to once an hour, which is how a link that dropped on every play
+                    // press went unreported for weeks — this row has no such manners.
+                    if (state.reportable != null) {
+                        LightRow(
+                            label = if (state.reportSent) "Error sent — thank you" else "Send error",
+                            sub = if (state.reportSent) null else "Report what just happened",
+                            enabled = !state.reportSent,
+                            onClick = { vm.sendDropReport() },
+                        )
                         Rule()
                     }
                     LightRow(label = "Devices", onClick = onOpenDevices)

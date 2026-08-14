@@ -61,7 +61,15 @@ class CompanionSession(private val connection: CompanionConnection) {
                 // closed, and, now that the app files its own reports, an offer to report a
                 // fault that was the app pressing the hook switch. Every reconnect starts by
                 // closing the old socket, so this fires on the happy path.
-                onDisconnect?.invoke(if (closing) null else failure)
+                //
+                // The mirror-image mistake lived here for three versions: a clean end of
+                // stream leaves `failure` null, so a television that *hung up on its own* —
+                // which tvOS does, and starting playback is one of the moments it does it —
+                // was reported exactly like the app closing its own socket. No banner, no
+                // automatic reconnect, no offer to report: the remote just sat there
+                // disconnected until somebody backed out and tapped the TV again. Only the
+                // `closing` flag can say a teardown was ours; EOF cannot.
+                onDisconnect?.invoke(if (closing) null else error)
             }
         }
     }

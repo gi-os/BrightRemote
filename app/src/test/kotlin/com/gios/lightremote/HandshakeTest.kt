@@ -11,7 +11,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -280,6 +282,65 @@ class HandshakeTest {
             )
             assertFailsWith<Exception> {
                 withClient { client -> client.connect("127.0.0.1", tv.port, bogus) }
+            }
+        }
+    }
+
+    /**
+     * The television hanging up is a *failure*, even though the socket ends cleanly.
+     *
+     * tvOS drops Companion links on its own schedule — starting playback is one reliable
+     * trigger — and an ordinary close arrives as end-of-stream, not as an exception. For
+     * three versions that null slipped through [CompanionSession]'s teardown as "no cause",
+     * which is the code for "the app closed its own socket": no banner, no automatic
+     * reconnect, no offer to report. The remote just sat there disconnected. Only the
+     * session's own `closing` flag may say a teardown was deliberate.
+     */
+    @Test
+    fun `a hangup by the television is reported as a failure`() {
+        FakeAppleTv().use { tv ->
+            tv.start()
+            val credentials = withClient { client ->
+                val setup = client.startPairing("127.0.0.1", tv.port)
+                client.finishPairing(setup, "1234")
+            }
+
+            withClient { client ->
+                val cause = CompletableDeferred<Throwable?>()
+                client.onDisconnected = { cause.complete(it) }
+                client.connect("127.0.0.1", tv.port, credentials)
+                assertTrue(client.isConnected)
+
+                tv.hangUp()
+
+                val reported = withTimeout(5_000) { cause.await() }
+                assertNotNull(
+                    reported,
+                    "an EOF the television caused must not be mistaken for our own close",
+                )
+            }
+        }
+    }
+
+    /** The other half of the same rule: our own teardown must stay quiet. */
+    @Test
+    fun `our own disconnect reports no cause`() {
+        FakeAppleTv().use { tv ->
+            tv.start()
+            val credentials = withClient { client ->
+                val setup = client.startPairing("127.0.0.1", tv.port)
+                client.finishPairing(setup, "1234")
+            }
+
+            withClient { client ->
+                val cause = CompletableDeferred<Throwable?>()
+                client.onDisconnected = { cause.complete(it) }
+                client.connect("127.0.0.1", tv.port, credentials)
+
+                client.disconnect()
+
+                val reported = withTimeout(5_000) { cause.await() }
+                assertNull(reported, "a deliberate close is not the television's fault")
             }
         }
     }
