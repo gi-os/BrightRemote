@@ -405,8 +405,6 @@ The protocol was implemented against [pyatv][pyatv]'s source (MIT) as the refere
 
 ## Bright\*
 
-*Apple's Companion protocol has no Android client, so this one is hand-ported to Kotlin from the wire format up.*
-
 26 open-source apps for the **Light Phone III** — camera, music, maps, messages,
 reading, transit, games. The phone has no app store, so they install by sideload: scan one
 code from **[brightmarket.gzl.dev](https://brightmarket.gzl.dev)** and BrightMarket keeps them updated.
