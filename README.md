@@ -1,3 +1,5 @@
+<img src="docs/icon.png" alt="" width="72" align="left" />
+
 # BrightRemote
 
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
