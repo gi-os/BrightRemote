@@ -543,7 +543,11 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             runCatching {
                 Reports.submit(
                     context,
-                    Reports.compose(
+                    // composeBug, not compose: as of light-common 1.3.0 the sheet hands up a
+                    // Draft and compose() takes one, because a report can now be an idea. This
+                    // call is neither — the app noticed its own connection drop — so it goes
+                    // straight to the bug body.
+                    Reports.composeBug(
                         context = context,
                         symptom = Symptom.Other,
                         note = "the connection to the Apple TV dropped",
