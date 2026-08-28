@@ -49,6 +49,7 @@ import com.gios.lightremote.ui.theme.gridDp
 import com.gios.lightremote.ui.theme.lightClickable
 import com.gios.lightremote.ui.theme.lightHoldable
 import com.gios.lightremote.ui.theme.tick
+import kotlinx.coroutines.delay
 
 /**
  * The remote.
@@ -244,6 +245,16 @@ fun RemoteScreen(
                 .fillMaxSize(),
         ) {
             state.error?.let { ErrorBanner(it) { vm.dismissError() } }
+            // What the app sent about itself, and the only notice it gets. Ten seconds, then
+            // it goes on its own; the tap target is the line, not the screen, so it cannot eat
+            // a press meant for the television.
+            state.sent?.let { note ->
+                LaunchedEffect(note) {
+                    delay(SENT_BANNER_MS)
+                    vm.dismissSent()
+                }
+                ErrorBanner(note) { vm.dismissSent() }
+            }
 
             when (state.connection) {
                 ConnectionState.Connecting -> CenteredMessage("Connecting…")
@@ -262,14 +273,15 @@ fun RemoteScreen(
                         LightRow(label = "Retry", onClick = { vm.reconnect() })
                         Rule()
                     }
-                    // Every disconnect can be sent, from right here. The report chip rations
-                    // itself to once an hour, which is how a link that dropped on every play
-                    // press went unreported for weeks — this row has no such manners.
-                    if (state.reportable != null) {
+                    // Nothing to press in the ordinary case: a drop files itself, and the
+                    // banner at the top says so. This row is only for the one a throttle
+                    // refused — the second drop in five minutes, which is often the one worth
+                    // having — so the automatic manners never stand between somebody and
+                    // sending what they are looking at.
+                    if (state.reportable != null && !state.reportSent) {
                         LightRow(
-                            label = if (state.reportSent) "Error sent — thank you" else "Send error",
-                            sub = if (state.reportSent) null else "Report what just happened",
-                            enabled = !state.reportSent,
+                            label = "Send error anyway",
+                            sub = "This one was held back to avoid repeats",
                             onClick = { vm.sendDropReport() },
                         )
                         Rule()
@@ -300,6 +312,14 @@ fun RemoteScreen(
  * silently do nothing. It halves the *velocity* the television infers too, which is the part that
  * actually stops the flick.
  */
+/**
+ * How long the "report sent" line stays up.
+ *
+ * Long enough to read while looking at a television, short enough that it is gone before the
+ * next thing goes wrong.
+ */
+private const val SENT_BANNER_MS = 10_000L
+
 private const val SWIPE_GAIN = 0.5f
 
 /**

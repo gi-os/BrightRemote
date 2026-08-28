@@ -1,3 +1,55 @@
+## BrightRemote v1.21 — Every failure files itself
+
+### The app reports its own disconnects now, without asking
+
+Before this build, a dropped connection *offered* to be reported: a chip in the corner, or a
+**Send error** row on the disconnected screen. Both are one tap away from being dismissed, and
+both appear at the exact moment you are standing in front of a television that has stopped
+working — which is the worst possible time to be asked for paperwork. So several of these
+disconnects were only ever diagnosed by reading logcat over somebody's shoulder.
+
+Now the app sends it. Every failure it can detect itself:
+
+- the television hanging up mid-session (the Plex play-press drop),
+- a connect or reconnect that fails every attempt,
+- three button presses in a row going unacknowledged.
+
+Each report carries what was tried, what came back, how it ended, and the last 150 lines of the
+wire trace — frame types, steps and timings, never payload bytes. A banner at the top of the
+screen says what was sent, stays ten seconds, and goes away on a tap. Nothing is filed silently.
+
+### One problem does not become thirty issues
+
+Auto-sending needs completely different manners from offering, and the version of this idea in
+another app on this phone learned that the expensive way: nine failures on one dead socket filed
+thirty separate issues, because the throttle keyed on the message text and every message named a
+different command. Three rules keep that from happening here, all in a new `DropWatch` that is
+plain Kotlin and covered by seven tests over a synthetic clock:
+
+- **One report per episode.** A drop, its two automatic reconnects, and their failures are one
+  event. The report waits nine seconds for the dust to settle and then goes out once — which is
+  also what lets it say how it ended: *dropped, picked itself back up after 4.1s* is the sentence
+  that identifies this bug.
+- **A hard floor of one minute between any two reports**, whatever they say, so a key that turns
+  out to be accidentally unique cannot flood through it.
+- **Escalating backoff per fault** — now, then two minutes, ten, thirty, then hourly, reset after
+  six quiet hours. The second report comes soon on purpose: two traces ten minutes apart are how
+  a drop like this actually gets diagnosed. Everything held back in between is counted and
+  carried into the next report that does go out, so a body can say *2 more like this went
+  unreported*, and nothing disappears.
+
+The fault key is the failure kind plus the exception class, deliberately *not* the message: ports,
+byte counts and transaction ids are exactly what made the old key useless.
+
+The throttle lives in preferences rather than memory, so an app that dies on launch, or a phone
+rebooting into the same broken Wi-Fi, does not get to treat every launch as a first offence.
+
+### The manual row is still there, for the one the throttle refused
+
+If a report was held back, **Send error anyway** appears on the disconnected screen. Your
+judgement about whether this particular drop matters beats any backoff in the code, and forcing
+it skips both throttles.
+
 ## LightRemote v1.20 — The Plex disconnect gets caught, reported, and reconnected; the wheel goes sideways
 
 ### A television that hangs up no longer looks like the app hanging up on itself

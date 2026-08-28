@@ -113,6 +113,17 @@ class Prefs(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_WHEEL_HORIZONTAL, value).apply()
 
     /**
+     * What the app has reported to itself lately, as [com.gios.lightremote.report.Ledger] writes it.
+     *
+     * In prefs rather than memory because the throttle has to survive the process. An app that
+     * dies, or a phone that reboots into the same broken Wi-Fi, would otherwise treat every
+     * launch as the first offence and file the same drop again and again.
+     */
+    var reportLedger: String
+        get() = prefs.getString(KEY_REPORT_LEDGER, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_REPORT_LEDGER, value).apply()
+
+    /**
      * Bundle ids pinned to the top of the app list.
      *
      * Kept per install rather than per device: the handful of apps worth pinning are the ones
@@ -133,5 +144,6 @@ class Prefs(context: Context) {
         const val KEY_PREFER_TOUCHPAD = "prefer_touchpad"
         const val KEY_WHEEL_HORIZONTAL = "wheel_horizontal"
         const val KEY_PINNED = "pinned_apps"
+        const val KEY_REPORT_LEDGER = "report_ledger"
     }
 }
