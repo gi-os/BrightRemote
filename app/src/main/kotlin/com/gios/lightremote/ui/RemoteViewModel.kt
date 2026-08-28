@@ -16,10 +16,11 @@ import com.gios.lightremote.data.PairedDevice
 import com.gios.lightremote.data.Prefs
 import com.gios.lightremote.discovery.DiscoveredDevice
 import com.gios.lightremote.discovery.Discovery
+import com.gios.lightremote.report.DropWatch
+import com.gios.lightremote.report.FaultKind
 import com.gios.light.common.report.Failure
 import com.gios.light.common.report.Reports
 import com.gios.light.common.report.Symptom
-import com.gios.light.common.report.Trouble
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -74,6 +75,14 @@ data class RemoteUiState(
      */
     val reportable: String? = null,
     val reportSent: Boolean = false,
+    /**
+     * What was just filed, for the banner that says so.
+     *
+     * A report that goes out on its own has to announce itself, or the app is doing something
+     * behind the user's back with their television and their network. The banner is the whole of
+     * that consent: it says what went and it is one tap to get rid of.
+     */
+    val sent: String? = null,
 )
 
 class RemoteViewModel(app: Application) : AndroidViewModel(app) {
@@ -94,6 +103,20 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The connect attempt in flight, so a second one cannot start beside it. */
     private var connectJob: Job? = null
+
+    /**
+     * Decides whether a failure gets filed, and folds a burst of them into one report.
+     *
+     * Its ledger lives in prefs so the throttle survives the process — see [DropWatch].
+     */
+    private val watch = DropWatch(
+        nowMs = { System.currentTimeMillis() },
+        load = { prefs.reportLedger },
+        store = { prefs.reportLedger = it },
+    )
+
+    /** The pending flush, so a burst of failures schedules one report and not one each. */
+    private var flushJob: Job? = null
 
     /**
      * Automatic reconnects since the last successful connect.
@@ -121,25 +144,25 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(
                 error = "The Apple TV is not answering. Tap Retry, or wake it with the remote.",
             )
-            Trouble.record("the Apple TV stopped acknowledging buttons")
+            fault(FaultKind.Unanswered, "three presses in a row went unacknowledged")
         }
         client.onDisconnected = { cause ->
-            val detail = cause?.let { dropDetail(it) }
             _state.value = _state.value.copy(
                 connection = ConnectionState.Disconnected,
                 // A clean close is the app's own doing; only surface real failures.
                 error = cause?.let { "Lost the connection: ${it.friendlyMessage()}" },
-                reportable = detail ?: _state.value.reportable,
-                reportSent = if (detail != null) false else _state.value.reportSent,
+                // Nothing to offer: the report files itself a few seconds from now. The row
+                // only comes back if a throttle refuses it.
+                reportable = null,
             )
             if (cause != null) {
-                // Every unexpected drop is worth offering, not just the ones left standing
-                // after the reconnects. The old rule called a self-healing drop noise — and
-                // then the link died on every play press for weeks and not one report went
-                // out, because each drop reconnected and disqualified itself. The chip still
-                // rations itself to once an hour; the Send error row on the disconnected
-                // screen is the always-available path.
-                Trouble.record("the Apple TV dropped the connection", detail)
+                // Sent, not offered. Every unexpected drop, not just the ones still standing
+                // after the reconnects — the old rule called a self-healing drop noise, and
+                // then the link died on every play press for weeks with not one report filed,
+                // because each drop reconnected and disqualified itself. What stops that
+                // becoming a flood is DropWatch: one report per episode, a floor between any
+                // two, and counts carried forward for whatever it swallows.
+                fault(FaultKind.Dropped, "${cause::class.java.simpleName}: ${cause.message}")
                 // A link that drops on its own gets picked back up, twice, before the Retry
                 // row becomes the user's problem. Wi-Fi hiccups and a TV waking from sleep
                 // both look like this, and both fix themselves.
@@ -356,6 +379,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     return false
                 }
                 lostReconnects = 0
+                // Tells the pending report how the episode ended. It does not cancel it:
+                // "dropped, back in 4.1s" is the sentence that identifies this bug, and a rule
+                // that only reported the drops which stayed down is what hid it for weeks.
+                watch.recovered()
                 _state.value = _state.value.copy(
                     connection = ConnectionState.Connected,
                     power = client.powerState,
@@ -420,16 +447,17 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
 
-            // Worth offering a report for. Every attempt is exhausted at this point, so this is
-            // not a hiccup — and the banner it also writes is gone the moment the screen changes,
-            // which is how a reconnect that never works goes unreported for a fortnight.
-            val detail = lastError?.let { dropDetail(it) }
-            detail?.let { Trouble.record("could not connect to the Apple TV", it) }
+            // Worth a report. Every attempt is exhausted at this point, so this is not a
+            // hiccup — and the banner it also writes is gone the moment the screen changes,
+            // which is how a reconnect that never works goes unreported for a fortnight. If a
+            // drop opened this episode, this folds into it rather than filing a second issue.
+            lastError?.let {
+                fault(FaultKind.ConnectFailed, "${it::class.java.simpleName}: ${it.message}")
+            }
             _state.value = _state.value.copy(
                 connection = ConnectionState.Disconnected,
                 error = lastError?.friendlyMessage(),
-                reportable = detail ?: _state.value.reportable,
-                reportSent = if (detail != null) false else _state.value.reportSent,
+                reportable = null,
             )
         }
     }
@@ -517,48 +545,88 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * The cause plus the recent wire narrative, ready to put in a report.
+     * Note a failure and, once it has finished failing, file it.
      *
-     * The exception alone says "closed" and nothing else; the trace says what the last thing
-     * on the wire was, which is the difference between "it disconnects when Plex starts
-     * playing" being fixable and being a shrug.
+     * Every route into here is a failure the app detected itself, which is the case for sending
+     * rather than asking: the app already knows what it tried and what came back, so there is
+     * nothing to ask a person standing in front of a television that has stopped working. The
+     * offer used to be a chip and a row, and both are one tap from being dismissed — which is
+     * how several of these evenings ended up diagnosed by reading logcat instead.
+     *
+     * The wait is what keeps it one report. A drop is followed by two automatic reconnects and
+     * their own failures; those are the same event, and a layer that reported per failure could
+     * not know it was in a batch. Nine grants failing on one dead socket filed thirty issues in
+     * another app for exactly that reason.
      */
-    private fun dropDetail(cause: Throwable): String =
-        "${cause::class.java.simpleName}: ${cause.message}\n\nWire trace (newest last):\n${Trace.tail()}"
+    private fun fault(kind: FaultKind, cause: String) {
+        val settle = watch.record(kind, cause) ?: return
+        flushJob?.cancel()
+        flushJob = viewModelScope.launch {
+            delay(settle)
+            flushFault()
+        }
+    }
+
+    private suspend fun flushFault() {
+        val report = watch.due(Trace.tail())
+        if (report == null) {
+            // Throttled. The episode is counted against its signature and carried into the next
+            // report that does go out, and the row on the disconnected screen comes back so it
+            // can still be sent by hand.
+            _state.value = _state.value.copy(
+                reportable = watch.heldCause(),
+                reportSent = false,
+            )
+            return
+        }
+        file(report)
+    }
 
     /**
-     * File the last drop as a bug report, straight from the disconnected screen.
+     * Send one report by hand, because the automatic one was throttled and the user disagrees.
      *
-     * Deliberately not routed through [Trouble]: that raises a chip once an hour per failure,
-     * which is the right manners for a feed that breaks every refresh and the wrong ones for
-     * a link that needs diagnosing — the second drop in five minutes is exactly the one worth
-     * sending. Queued on disk first, like every report, so it survives being offline.
+     * Their judgement beats the backoff: the second drop in five minutes is often the
+     * interesting one, and they are the person watching it happen.
      */
     fun sendDropReport() {
-        val detail = _state.value.reportable ?: return
-        if (_state.value.reportSent) return
-        _state.value = _state.value.copy(reportSent = true)
+        val report = watch.forceHeld(Trace.tail()) ?: return
+        _state.value = _state.value.copy(reportSent = true, reportable = null)
+        viewModelScope.launch { file(report) }
+    }
+
+    /** Queued on disk first, like every report, so it survives being offline. */
+    private suspend fun file(report: com.gios.lightremote.report.DropReport) {
         val context = getApplication<Application>()
-        viewModelScope.launch {
-            runCatching {
-                Reports.submit(
-                    context,
-                    Reports.compose(
-                        context = context,
-                        symptom = Symptom.Other,
-                        note = "the connection to the Apple TV dropped",
-                        screen = "remote",
-                        crash = null,
-                        failure = Failure("keep the connection to the Apple TV", detail),
-                    ),
-                )
-            }.onFailure { error ->
-                _state.value = _state.value.copy(
-                    reportSent = false,
-                    error = error.friendlyMessage(),
-                )
-            }
+        runCatching {
+            Reports.submit(
+                context,
+                Reports.compose(
+                    context = context,
+                    symptom = Symptom.Other,
+                    note = report.note,
+                    screen = "remote",
+                    crash = null,
+                    failure = Failure(report.what, report.detail),
+                ),
+            )
+        }.onSuccess {
+            _state.value = _state.value.copy(
+                reportable = null,
+                reportSent = true,
+                sent = "Error report sent: ${report.note}.",
+            )
+        }.onFailure { error ->
+            // The report is already on disk — light-common queues before it posts, and drains
+            // the queue on the next launch — so this is a failed *send*, not a lost report.
+            _state.value = _state.value.copy(
+                sent = null,
+                error = error.friendlyMessage(),
+            )
         }
+    }
+
+    fun dismissSent() {
+        _state.value = _state.value.copy(sent = null)
     }
 
     // ------------------------------------------------------------------ commands
