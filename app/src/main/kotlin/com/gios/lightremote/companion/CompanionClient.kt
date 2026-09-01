@@ -1,5 +1,7 @@
 package com.gios.lightremote.companion
 
+import com.gios.lightremote.proto.NowPlayingInfo
+import com.gios.lightremote.proto.NowPlayingPayloads
 import com.gios.lightremote.proto.RtiPayloads
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -135,7 +137,19 @@ class CompanionClient(
     var volume: Double = 0.0
         private set
 
-    /** Fired whenever [mediaControlFlags], [powerState] or [volume] changes. */
+    /**
+     * The last `NowPlayingInfo` the TV pushed (tvOS 18+). Null until the television is
+     * actually playing something with a known duration — the stripped-down packets some
+     * title changes send have nothing to draw a bar for.
+     *
+     * This is a point-in-time snapshot: the position only moves between pushes if the
+     * consumer extrapolates from [NowPlayingInfo.rate] against a local clock, which is what
+     * the Apple client does and what the remote's view model does here.
+     */
+    var nowPlaying: NowPlayingInfo? = null
+        private set
+
+    /** Fired whenever [mediaControlFlags], [powerState], [volume] or [nowPlaying] changes. */
     var onStateChanged: (() -> Unit)? = null
     var onDisconnected: ((Throwable?) -> Unit)? = null
 
@@ -189,6 +203,7 @@ class CompanionClient(
                 session = null
                 powerState = PowerState.Unknown
                 mediaControlFlags = MediaControlFlags.None
+                nowPlaying = null
                 onStateChanged?.invoke()
                 onDisconnected?.invoke(cause)
             } else {
@@ -244,7 +259,12 @@ class CompanionClient(
             subscribe("_iMC")
             subscribe("SystemStatus")
             subscribe("TVSystemStatus")
+            // tvOS 18 pushes `NowPlayingInfo` after this, and — unlike the others — only after
+            // an explicit ask. The request's own reply is empty; the data arrives as a push a
+            // moment later, so this is fire-and-forget rather than something to read.
+            subscribe("NowPlayingInfo")
         }
+        optional("now playing") { fetchNowPlayingInfo() }
         optional("power state") { refreshPowerState() }
         Trace.step("connected")
     }
@@ -339,7 +359,28 @@ class CompanionClient(
                 powerState = statusToPowerState(content["state"] as? Long)
                 onStateChanged?.invoke()
             }
+            "NowPlayingInfo" -> {
+                // The payload rides under a key named after the event, and it is an
+                // NSKeyedArchiver blob rather than an OPACK value.
+                val archive = content["NowPlayingInfoKey"] as? ByteArray
+                nowPlaying = archive?.let(NowPlayingPayloads::readNowPlaying)
+                onStateChanged?.invoke()
+            }
         }
+    }
+
+    /**
+     * Ask the television to send its current now-playing state.
+     *
+     * The reply to this request is empty by design — the response to the request is the push
+     * that lands a moment later. It is called once on connect to seed [nowPlaying] (rather
+     * than waiting for the next play/pause event), and a television that has nothing playing
+     * answers by pushing a packet with no duration, which [NowPlayingPayloads.readNowPlaying]
+     * returns null for. Older tvOS has no handler for the request at all, which is why this
+     * is best-effort.
+     */
+    suspend fun fetchNowPlayingInfo() {
+        runCatching { requireSession().request("FetchCurrentNowPlayingInfoEvent", emptyMap(), timeoutMs = 2_000) }
     }
 
     private fun statusToPowerState(state: Long?): PowerState = when (state?.toInt()) {

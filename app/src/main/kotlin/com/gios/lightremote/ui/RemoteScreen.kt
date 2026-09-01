@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,6 +35,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gios.lightremote.R
@@ -43,6 +45,7 @@ import com.gios.lightremote.companion.PowerState
 import com.gios.lightremote.companion.TouchPhase
 import com.gios.lightremote.hw.LocalVolumeBus
 import com.gios.lightremote.hw.WheelSteps
+import com.gios.lightremote.proto.NowPlayingInfo
 import com.gios.lightremote.ui.theme.LightColors
 import com.gios.lightremote.ui.theme.LightGrid
 import com.gios.lightremote.ui.theme.gridDp
@@ -106,69 +109,76 @@ fun RemoteScreen(
     Scaffold(
         containerColor = LightColors.Background,
         topBar = {
-            LightTopBar(
-                // No title: the panel is short, and the device name is not worth three grid
-                // units when the chevron already leads to the list that names it.
-                title = null,
-                onBack = onOpenDevices,
-                action = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Which axis the wheel walks. The icon shows the current mode — a
-                        // glance answers "what will the wheel do right now" — and a tap
-                        // flips it. A preference, not a session flag: the person who lives
-                        // on the home screen's rows wants it sideways every time.
-                        Box(
-                            Modifier
-                                .size(LightGrid.BAR_ICON_UNITS.gridDp())
-                                .lightClickable {
-                                    wheelHorizontal = !wheelHorizontal
-                                    vm.wheelHorizontal = wheelHorizontal
-                                },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                painterResource(
-                                    if (wheelHorizontal) R.drawable.ic_wheel_horizontal_white
-                                    else R.drawable.ic_wheel_vertical_white,
-                                ),
-                                contentDescription = if (wheelHorizontal) {
-                                    "Wheel scrolls sideways, tap for up and down"
-                                } else {
-                                    "Wheel scrolls up and down, tap for sideways"
-                                },
-                                tint = if (connected) LightColors.Content else LightColors.Faint,
-                                modifier = Modifier.size(LightGrid.BAR_ICON_UNITS.gridDp()),
-                            )
+            Column {
+                LightTopBar(
+                    // No title: the panel is short, and the device name is not worth three grid
+                    // units when the chevron already leads to the list that names it.
+                    title = null,
+                    onBack = onOpenDevices,
+                    action = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Which axis the wheel walks. The icon shows the current mode — a
+                            // glance answers "what will the wheel do right now" — and a tap
+                            // flips it. A preference, not a session flag: the person who lives
+                            // on the home screen's rows wants it sideways every time.
+                            Box(
+                                Modifier
+                                    .size(LightGrid.BAR_ICON_UNITS.gridDp())
+                                    .lightClickable {
+                                        wheelHorizontal = !wheelHorizontal
+                                        vm.wheelHorizontal = wheelHorizontal
+                                    },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    painterResource(
+                                        if (wheelHorizontal) R.drawable.ic_wheel_horizontal_white
+                                        else R.drawable.ic_wheel_vertical_white,
+                                    ),
+                                    contentDescription = if (wheelHorizontal) {
+                                        "Wheel scrolls sideways, tap for up and down"
+                                    } else {
+                                        "Wheel scrolls up and down, tap for sideways"
+                                    },
+                                    tint = if (connected) LightColors.Content else LightColors.Faint,
+                                    modifier = Modifier.size(LightGrid.BAR_ICON_UNITS.gridDp()),
+                                )
+                            }
+                            Spacer(Modifier.width(1f.gridDp()))
+                            // Power doubles as the connection indicator: dim when we don't know.
+                            //
+                            // Held for three seconds rather than tapped. It sits in the corner your
+                            // thumb reaches for on the way to the back chevron, and putting the
+                            // television to sleep by accident is the most annoying thing this app
+                            // could do. The climbing buzz is what makes three seconds bearable — it
+                            // tells you the hold is being counted rather than leaving you guessing.
+                            Box(
+                                Modifier
+                                    .size(LightGrid.BAR_ICON_UNITS.gridDp())
+                                    .lightHoldable(enabled = connected) { vm.togglePower() },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    painterResource(R.drawable.ic_power_white),
+                                    contentDescription = "Power, hold for three seconds",
+                                    tint = when {
+                                        !connected -> LightColors.Faint
+                                        state.power == PowerState.On -> LightColors.Content
+                                        state.power == PowerState.Screensaver -> LightColors.ContentSecondary
+                                        else -> LightColors.Faint
+                                    },
+                                    modifier = Modifier.size(LightGrid.BAR_ICON_UNITS.gridDp()),
+                                )
+                            }
                         }
-                        Spacer(Modifier.width(1f.gridDp()))
-                        // Power doubles as the connection indicator: dim when we don't know.
-                        //
-                        // Held for three seconds rather than tapped. It sits in the corner your
-                        // thumb reaches for on the way to the back chevron, and putting the
-                        // television to sleep by accident is the most annoying thing this app
-                        // could do. The climbing buzz is what makes three seconds bearable — it
-                        // tells you the hold is being counted rather than leaving you guessing.
-                        Box(
-                            Modifier
-                                .size(LightGrid.BAR_ICON_UNITS.gridDp())
-                                .lightHoldable(enabled = connected) { vm.togglePower() },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                painterResource(R.drawable.ic_power_white),
-                                contentDescription = "Power, hold for three seconds",
-                                tint = when {
-                                    !connected -> LightColors.Faint
-                                    state.power == PowerState.On -> LightColors.Content
-                                    state.power == PowerState.Screensaver -> LightColors.ContentSecondary
-                                    else -> LightColors.Faint
-                                },
-                                modifier = Modifier.size(LightGrid.BAR_ICON_UNITS.gridDp()),
-                            )
-                        }
-                    }
-                },
-            )
+                    },
+                )
+                // A two-unit sliver under the bar: how far into the current media we are.
+                // Purely for visibility — no scrub, no tap. Drawn only when the television has
+                // something measurable playing (see [NowPlayingInfo.fraction]); otherwise it
+                // is a single rule line, which reads as nothing.
+                NowPlayingProgress(state.nowPlaying)
+            }
         },
         bottomBar = {
             Column {
@@ -586,6 +596,51 @@ private fun PadButton(
         contentAlignment = Alignment.Center,
     ) { content() }
 }
+
+/**
+ * The tiny fill under the top bar: how far into the current media we are, for visibility
+ * only. No scrub, no tap — it is the companion to the Apple client's now-playing sliver.
+ *
+ * tvOS pushes a fresh [NowPlayingInfo] on play/pause/skip/title changes, not on a tick, so
+ * between pushes the position is extrapolated from the playback rate against a local clock
+ * ([NowPlayingInfo.extrapolate]) — which is exactly what the Apple TV Remote does, and what
+ * keeps the bar walking forward while the television is quiet about it. When nothing
+ * measurable is playing the fill is empty: just the track, which reads as nothing.
+ *
+ * Kept deliberately small: a two-point sliver in the track colour with a white fill, so it
+ * reports without competing with the remote itself.
+ */
+@Composable
+private fun NowPlayingProgress(info: NowPlayingInfo?) {
+    // A whole screen of recomposition per tick would be silly for a two-point bar, so the
+    // extrapolated fraction lives locally and only the fill redraws.
+    var fraction by remember(info) { mutableStateOf(info?.fraction ?: 0.0) }
+    LaunchedEffect(info) {
+        while (true) {
+            fraction = info?.let {
+                val elapsed = System.nanoTime() - it.receivedAtNanos
+                if (it.duration > 0.0) (it.extrapolate(elapsed) / it.duration).coerceIn(0.0, 1.0) else 0.0
+            } ?: 0.0
+            delay(PROGRESS_TICK_MS)
+        }
+    }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(2.dp)
+            .background(LightColors.Rule),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth(fraction.toFloat())
+                .fillMaxHeight()
+                .background(LightColors.Content),
+        )
+    }
+}
+
+/** How often the progress fill re-derives its position. */
+private const val PROGRESS_TICK_MS = 500L
 
 // Reconnecting automatically was tried and removed: a failed connect goes
 // Connecting -> Disconnected, which is a state *change*, so an effect keyed on the

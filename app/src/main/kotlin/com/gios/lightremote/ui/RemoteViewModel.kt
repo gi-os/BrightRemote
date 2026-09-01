@@ -16,6 +16,7 @@ import com.gios.lightremote.data.PairedDevice
 import com.gios.lightremote.data.Prefs
 import com.gios.lightremote.discovery.DiscoveredDevice
 import com.gios.lightremote.discovery.Discovery
+import com.gios.lightremote.proto.NowPlayingInfo
 import com.gios.lightremote.report.DropWatch
 import com.gios.lightremote.report.FaultKind
 import com.gios.light.common.report.Failure
@@ -60,6 +61,12 @@ data class RemoteUiState(
     val controls: MediaControlFlags = MediaControlFlags.None,
     val volume: Double = 0.0,
     val muted: Boolean = false,
+    /**
+     * The television's latest now-playing snapshot, or null when nothing measurable is
+     * playing. Position advances between pushes via [NowPlayingInfo.extrapolate] — see the
+     * progress bar in [RemoteScreen].
+     */
+    val nowPlaying: NowPlayingInfo? = null,
     val apps: List<InstalledApp> = emptyList(),
     val appsLoading: Boolean = false,
     val pinned: Set<String> = emptySet(),
@@ -135,6 +142,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 controls = client.mediaControlFlags,
                 volume = client.volume,
                 muted = client.isMuted,
+                nowPlaying = client.nowPlaying,
             )
         }
         // The socket is fine and the television has stopped listening. Nothing else notices this
