@@ -79,9 +79,18 @@ change: it had been wearing the crossed-out speaker mark, which reads as mute, n
 quieter. The three volume icons are now a generated family — one speaker cone, one wave
 for down, two for up, a cross for mute — so only the part that carries meaning differs.
 
+The **D-pad face** (behind **More** → the pad/trackpad toggle) is three weighted rows: Up
+alone on top, Left/OK/Right in the middle, and — since v1.22 — **back 15 / Down / forward
+15** along the bottom, so that row reads as a timeline. Those two cells were empty, and a
+fifteen-second skip is the thing you reach for most while something is playing; having it
+three taps behind the drawer was the wrong trade. They dim and go dead when the TV reports
+no playback controls, exactly like the drawer's copies. The cells beside Up stay blank on
+purpose: six live targets is still a face you can hit without looking. Corners stay dead
+rather than snapping to the nearest arrow — a diagonal thumb means "I was not sure", and
+guessing moves the focus somewhere nobody chose.
+
 Also: the volume rocker drives the *television*, not the phone, while a TV is connected
-and the remote is on screen; **Type** sends text to the focused field on the TV; the D-pad
-is still reachable behind **More** for stepping through tile grids. Names follow tvOS, not
+and the remote is on screen; **Type** sends text to the focused field on the TV. Names follow tvOS, not
 the protocol: the HID command Apple calls "Menu" is what tvOS treats as back, so it is
 labelled Back here.
 
@@ -374,6 +383,8 @@ so consecutive tags can share a `major.minor` across several unrelated changes.
 
 | Version | Change |
 | --- | --- |
+| *(pending)* | Skip ±15s on the D-pad face, either side of Down (source bumped to `1.22.0`) |
+| v1.21.36 | Now-playing progress sliver under the top bar |
 | *(pending)* | Back is a tap, unacknowledged presses are not failures, full-size D-pad, swipe gain, multicast lock, typed address (source bumped to `1.19.0`) |
 | *(pending)* | Seal frames inside the write lock, serialise presses, wheel reversal guard, tap-beats-in-flight reconnect, report chip (source bumped to `1.17.0`) |
 | v1.16.x | Shake the phone to report a bug |

@@ -1,3 +1,35 @@
+## BrightRemote v1.22 — Skip, without opening the drawer
+
+### The D-pad's dead corners are now back-15 and forward-15
+
+The direction pad had two empty cells, one either side of Down, and they were the wrong two to
+leave empty. Skipping fifteen seconds is the thing you reach for most while something is actually
+playing — the line you missed, the recap you have already seen — and until now it was three taps
+behind the drawer: open it, aim at a small icon, close it, every single time.
+
+They live on the face now. **Back 15** to the left of Down, **Forward 15** to the right, so the
+bottom row reads as a timeline: back, down, forward. Both are full-height cells the size of the
+left and right arrows, which is to say big enough to hit while looking at the television rather
+than at the phone. The two cells beside Up stay blank on purpose — six live targets is still a
+face you can work blind, and nothing else earned a seventh.
+
+The icons are drawn smaller than the arrows. The four directions and OK are what the pad is for,
+and a skip drawn at arrow weight would compete with Down for the same glance.
+
+### They go dark when there is nothing to skip
+
+Same rule the drawer's copies already follow: when the television reports no playback controls —
+the home screen, a menu, anything that is not playing — both buttons are dimmed and dead. On the
+home screen a skip genuinely does nothing, and a button that looks live and does nothing is worse
+than one that admits it.
+
+### Also in this build
+
+The now-playing progress sliver under the top bar, which went out quietly in v1.21.36: a two-point
+fill showing how far into the current title you are, extrapolated from the playback rate between
+the television's pushes so it keeps walking forward while tvOS is silent. Visibility only — there
+is nothing to scrub.
+
 ## BrightRemote v1.21 — Every failure files itself
 
 ### The app reports its own disconnects now, without asking

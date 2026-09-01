@@ -435,9 +435,22 @@ private fun Touchpad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
  * The corners are deliberately dead rather than mapped to the nearest arrow. A diagonal thumb on
  * a remote means "I was not sure", and guessing on its behalf is how the focus ends up somewhere
  * nobody chose.
+ *
+ * The two cells beside Down were empty, and they were the wrong two to leave empty: skipping
+ * fifteen seconds is the thing you reach for most while something is playing, and it was three
+ * taps away behind the drawer — open it, aim at a small icon, close it — every time. Left and
+ * right of Down is where a thumb already is, and the row reads as a timeline: back, down,
+ * forward. The cells beside Up stay blank; a face with six live targets is still a face you can
+ * hit without looking, and there is nothing that belongs there badly enough to spend one.
+ *
+ * They follow the same rule as the drawer's copies: dark and dead when the television reports no
+ * playback controls, because on the home screen a skip genuinely does nothing and a live-looking
+ * button that does nothing is worse than a dim one.
  */
 @Composable
 private fun DirectionPad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val playing = state.controls.anyPlayback
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().weight(1f)) {
             Spacer(Modifier.weight(1f))
@@ -462,11 +475,23 @@ private fun DirectionPad(vm: RemoteViewModel, modifier: Modifier = Modifier) {
             }
         }
         Row(Modifier.fillMaxWidth().weight(1f)) {
-            Spacer(Modifier.weight(1f))
+            PadButton(
+                Modifier.weight(1f).fillMaxHeight(),
+                { vm.skipBackward() },
+                enabled = playing,
+            ) {
+                SkipIcon(R.drawable.ic_skip_backward_fifteen_white, playing)
+            }
             PadButton(Modifier.weight(2f).fillMaxHeight(), { vm.press(HidCommand.Down) }) {
                 ArrowIcon(R.drawable.ic_down_white)
             }
-            Spacer(Modifier.weight(1f))
+            PadButton(
+                Modifier.weight(1f).fillMaxHeight(),
+                { vm.skipForward() },
+                enabled = playing,
+            ) {
+                SkipIcon(R.drawable.ic_skip_forward_fifteen_white, playing)
+            }
         }
     }
 }
@@ -585,14 +610,30 @@ private fun ArrowIcon(resource: Int, rotation: Float = 0f) {
     )
 }
 
+/**
+ * A skip on the pad face. Smaller than an arrow on purpose — the four directions and OK are what
+ * the face is for, and a fifteen-second skip drawn at arrow weight would compete with Down for
+ * the same glance.
+ */
+@Composable
+private fun SkipIcon(resource: Int, enabled: Boolean) {
+    Icon(
+        painterResource(resource),
+        contentDescription = null,
+        tint = if (enabled) LightColors.Content else LightColors.Faint,
+        modifier = Modifier.size(2.4f.gridDp()),
+    )
+}
+
 @Composable
 private fun PadButton(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
+    enabled: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     Box(
-        modifier.lightClickable(onClick = onClick),
+        modifier.lightClickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { content() }
 }
