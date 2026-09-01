@@ -32,7 +32,7 @@ android {
         targetSdk = 35
         // CI overwrites both from the workflow run number; see .github/workflows/build.yml
         versionCode = 1
-        versionName = "1.22.0"
+        versionName = "1.23.0"
 
         // LightReport.install reads this at startup; light-common has its own BuildConfig,
         // so the app's key has to be handed in rather than looked up across the boundary.
@@ -93,6 +93,10 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    // MediaSessionCompat, so BrightControl's lock face gets a transport row over this remote.
+    // The one new dependency the media session needs; framework MediaSession would work too but
+    // the compat class carries the pre-33 behaviour the LPIII still runs on.
+    implementation("androidx.media:media:1.7.0")
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 

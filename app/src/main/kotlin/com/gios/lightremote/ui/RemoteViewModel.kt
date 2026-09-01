@@ -17,6 +17,12 @@ import com.gios.lightremote.data.Prefs
 import com.gios.lightremote.discovery.DiscoveredDevice
 import com.gios.lightremote.discovery.Discovery
 import com.gios.lightremote.proto.NowPlayingInfo
+import com.gios.lightremote.proto.Mrp
+import com.gios.lightremote.proto.MrpNowPlaying
+import com.gios.lightremote.airplay.AirPlayAuth
+import com.gios.lightremote.airplay.MrpTunnel
+import com.gios.lightremote.media.RemoteMediaSession
+import com.gios.lightremote.service.RemoteService
 import com.gios.lightremote.report.DropWatch
 import com.gios.lightremote.report.FaultKind
 import com.gios.light.common.report.Failure
@@ -51,6 +57,9 @@ private const val LOST_RECONNECTS = 2
  */
 private const val DEFAULT_COMPANION_PORT = 49152
 
+/** How long a connection may sit with no activity before it is dropped. */
+private const val IDLE_TIMEOUT_MS = 30 * 60 * 1000L
+
 data class RemoteUiState(
     val discovered: List<DiscoveredDevice> = emptyList(),
     val paired: List<PairedDevice> = emptyList(),
@@ -67,6 +76,12 @@ data class RemoteUiState(
      * progress bar in [RemoteScreen].
      */
     val nowPlaying: NowPlayingInfo? = null,
+    /**
+     * The richer now-playing picture from MRP over AirPlay: title, artist and artwork, which
+     * Companion never sends. Null unless the MRP tunnel is up and something is playing — the
+     * remote screen shows the art when it is present, and it feeds the media session.
+     */
+    val mrpNowPlaying: MrpNowPlaying? = null,
     val apps: List<InstalledApp> = emptyList(),
     val appsLoading: Boolean = false,
     val pinned: Set<String> = emptySet(),
@@ -94,9 +109,37 @@ data class RemoteUiState(
 
 class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
+    private val app get() = getApplication<Application>()
     private val prefs = Prefs(app)
     private val discovery = Discovery(app)
     private val client = CompanionClient(prefs.identity, viewModelScope)
+
+    /**
+     * The read-only now-playing tunnel over AirPlay. Opportunistic and entirely optional — it is
+     * brought up beside a healthy Companion session and torn down with it, and any failure of it
+     * degrades to "no metadata" without touching the remote.
+     */
+    private var mrpTunnel: MrpTunnel? = null
+
+    /**
+     * The media session, so BrightControl's lock face grows a transport row over this remote.
+     * Created lazily and kept for the life of the view model; activated only while connected and
+     * something is playing (see [updateMediaSession]).
+     */
+    private val mediaSession: RemoteMediaSession by lazy {
+        RemoteMediaSession(
+            app,
+            object : RemoteMediaSession.Controls {
+                override fun playPause() = this@RemoteViewModel.playPause()
+                override fun nextTrack() = command { client.nextTrack() }
+                override fun previousTrack() = command { client.previousTrack() }
+                override fun seekTo(positionMs: Long) = this@RemoteViewModel.seekTo(positionMs)
+            },
+        )
+    }
+
+    /** The 30-minute no-activity timeout that drops the link and stops the service. */
+    private var idleJob: Job? = null
 
     private val _state = MutableStateFlow(
         RemoteUiState(paired = prefs.devices(), pinned = prefs.pinnedApps()),
@@ -144,6 +187,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 muted = client.isMuted,
                 nowPlaying = client.nowPlaying,
             )
+            updateMediaSession()
         }
         // The socket is fine and the television has stopped listening. Nothing else notices this
         // — the frames go out, no reply comes back, and every button silently does nothing — so
@@ -155,6 +199,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             fault(FaultKind.Unanswered, "three presses in a row went unacknowledged")
         }
         client.onDisconnected = { cause ->
+            teardownConnectionSideEffects()
             _state.value = _state.value.copy(
                 connection = ConnectionState.Disconnected,
                 // A clean close is the app's own doing; only surface real failures.
@@ -405,6 +450,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     error = client.connectWarnings.takeIf { it.isNotEmpty() }
                         ?.joinToString("; ", prefix = "Connected, but "),
                 )
+                onConnected(device, host)
                 return true
             }
 
@@ -538,6 +584,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         connectJob = null
         activeDeviceId = null
         lostReconnects = 0
+        teardownConnectionSideEffects()
         client.disconnect()
         _state.value = _state.value.copy(connection = ConnectionState.Disconnected, activeName = null)
     }
@@ -644,6 +691,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      * rather than as a crash from a coroutine nobody is watching.
      */
     private fun command(block: suspend () -> Unit) {
+        noteActivity()
         viewModelScope.launch {
             runCatching { block() }.onFailure { error ->
                 _state.value = _state.value.copy(error = error.friendlyMessage())
@@ -660,6 +708,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      * that against a function that returns the instant a coroutine is launched.
      */
     suspend fun pressAwait(button: HidCommand) {
+        noteActivity()
         runCatching { client.press(button) }.onFailure { error ->
             _state.value = _state.value.copy(error = error.friendlyMessage())
         }
@@ -683,7 +732,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      * touch sample is what scrambled their order on the way to the socket. The client queues
      * these itself, in order, on one consumer.
      */
-    fun touch(x: Int, y: Int, phase: TouchPhase) = client.touch(x, y, phase)
+    fun touch(x: Int, y: Int, phase: TouchPhase) {
+        noteActivity()
+        client.touch(x, y, phase)
+    }
 
     fun loadApps() {
         if (_state.value.appsLoading) return
@@ -743,7 +795,129 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
+        idleJob?.cancel()
+        stopMrp()
+        mediaSession.release()
+        RemoteService.stop(app)
         client.disconnect()
+    }
+
+    // ------------------------------------------------------------------ connection side effects
+
+    /**
+     * Everything that hangs off a live Companion session but is not the session itself: the
+     * foreground service that keeps the process alive, the MRP tunnel, the media session and the
+     * idle timer. Brought up here on a successful connect.
+     */
+    private fun onConnected(device: PairedDevice, host: String) {
+        RemoteService.start(app, device.name)
+        resetIdleTimer()
+        startMrp(host)
+        updateMediaSession()
+    }
+
+    /** The mirror image: stop the service, the tunnel, the session and the timer on any teardown. */
+    private fun teardownConnectionSideEffects() {
+        idleJob?.cancel()
+        idleJob = null
+        stopMrp()
+        mediaSession.deactivate()
+        _state.value = _state.value.copy(mrpNowPlaying = null)
+        RemoteService.stop(app)
+    }
+
+    // ------------------------------------------------------------------ MRP (now-playing over AirPlay)
+
+    /**
+     * Bring up the MRP tunnel beside a healthy Companion session, best-effort.
+     *
+     * Optional by contract: any failure — the AirPlay port closed, pairing refused, a parse
+     * error — degrades to no metadata and must never disturb the remote. So the whole thing is
+     * wrapped and swallowed, and it files no report of its own; the Companion session is the
+     * thing worth reporting on, and it is untouched by whatever happens here.
+     */
+    private fun startMrp(host: String) {
+        stopMrp()
+        val tunnel = MrpTunnel(host = host, deviceId = prefs.identity.deviceId, scope = viewModelScope)
+        tunnel.onNowPlaying = { np ->
+            viewModelScope.launch {
+                _state.value = _state.value.copy(mrpNowPlaying = np)
+                updateMediaSession()
+            }
+        }
+        mrpTunnel = tunnel
+        viewModelScope.launch {
+            runCatching { tunnel.connect(auth = AirPlayAuth.Transient) }
+                .onFailure { error ->
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    Trace.problem("mrp: tunnel unavailable, no metadata", error)
+                    stopMrp()
+                }
+        }
+    }
+
+    private fun stopMrp() {
+        mrpTunnel?.close()
+        mrpTunnel = null
+    }
+
+    // ------------------------------------------------------------------ media session
+
+    /**
+     * Feed the media session from the best now-playing we have: MRP when the tunnel is up (a real
+     * title and artwork), otherwise Companion's own now-playing synthesised into the same shape
+     * with a plain "Apple TV" label. Null when nothing measurable is playing, which deactivates
+     * the session — the lock face's rule.
+     */
+    private fun mediaFeed(): MrpNowPlaying? {
+        mrpTunnel?.nowPlaying?.let { return it }
+        val companion = client.nowPlaying ?: return null
+        return MrpNowPlaying(
+            title = null,
+            artist = null,
+            album = null,
+            appName = null,
+            bundleIdentifier = null,
+            playbackState = if (companion.rate > 0.0) Mrp.PlaybackState.Playing else Mrp.PlaybackState.Paused,
+            elapsed = companion.position,
+            duration = companion.duration,
+            rate = companion.rate,
+            artwork = null,
+            artworkMimeType = null,
+        )
+    }
+
+    private fun updateMediaSession() {
+        if (_state.value.connection != ConnectionState.Connected) {
+            mediaSession.deactivate()
+            return
+        }
+        mediaSession.update(mediaFeed(), fallbackTitle = _state.value.activeName ?: "Apple TV")
+    }
+
+    /** Absolute seek, expressed as a skip relative to where the item is now. */
+    private fun seekTo(positionMs: Long) = command {
+        val current = mediaFeed()?.elapsed ?: return@command
+        client.skipBy(positionMs / 1000.0 - current)
+    }
+
+    // ------------------------------------------------------------------ idle timeout
+
+    /**
+     * Drop the link after thirty minutes with no button, touch or command. A remote left
+     * connected in a pocket holds a socket and a foreground service open for nothing; the next
+     * foreground brings it straight back.
+     */
+    private fun resetIdleTimer() {
+        idleJob?.cancel()
+        idleJob = viewModelScope.launch {
+            delay(IDLE_TIMEOUT_MS)
+            if (_state.value.connection == ConnectionState.Connected) disconnect()
+        }
+    }
+
+    private fun noteActivity() {
+        if (_state.value.connection == ConnectionState.Connected) resetIdleTimer()
     }
 }
 

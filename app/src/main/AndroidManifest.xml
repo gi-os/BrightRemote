@@ -28,6 +28,18 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
+    <!--
+      The foreground service that keeps the process alive while the screen is off so the
+      Companion socket and the media session survive. connectedDevice is the right type for a
+      long-lived link to a device on the network, and it is satisfiable here by the Wi-Fi
+      permissions already held (CHANGE_WIFI_MULTICAST_STATE is on the type's allow-list).
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- POST_NOTIFICATIONS on 13+: the LOW ongoing "Connected to <name>" line. Not fatal if
+         denied — the service still runs, the notification is simply not shown. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -48,6 +60,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!--
+            Keeps the process — and with it the Companion socket and the media session — alive
+            while the screen is off. Not exported: nothing outside the app starts it.
+        -->
+        <service
+            android:name=".service.RemoteService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
         <!--
             LightSync finds apps by provider authority suffix, so this entry is the whole
             registration. exported=true is required for a cross-app ContentProvider and is not

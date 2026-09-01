@@ -297,6 +297,136 @@ def _find(o, path="root"):
 _find(out)
 print(json.dumps(out, indent=1))
 
+# ---------------------------------------------------------------- MRP protobuf
+# The MRP messages this app parses and sends, serialised by Google's own protobuf via
+# pyatv's generated classes. A Kotlin codec that reproduces (for what we send) and reads
+# (for what we parse) these bytes is wire-compatible with a real Apple TV.
+#
+# pyatv's protobuf package imports its own generated siblings by the full dotted path
+# `pyatv.protocols.mrp.protobuf.*`, which would drag in pyatv/__init__ (and aiohttp). So
+# the parent packages are faked as empty namespace packages pointing at the real source
+# dirs, and only the protobuf leaf is imported -- same spirit as the _load() shim above.
+import types as _types  # noqa: E402
+
+
+def _fake_pkg(name, path):
+    module = _types.ModuleType(name)
+    module.__path__ = [path]
+    sys.modules[name] = module
+
+
+try:
+    _mrp_base = f"{_P}"
+    _fake_pkg("pyatv", _mrp_base)
+    _fake_pkg("pyatv.protocols", f"{_mrp_base}/protocols")
+    _fake_pkg("pyatv.protocols.mrp", f"{_mrp_base}/protocols/mrp")
+    import importlib as _importlib  # noqa: E402
+
+    pb = _importlib.import_module("pyatv.protocols.mrp.protobuf")
+
+    out["mrp"] = {}
+
+    # A full SET_STATE: now-playing metadata, timing, playback state, and a content item
+    # carrying artwork bytes and its MIME type.
+    _m = pb.ProtocolMessage()
+    _m.type = pb.SET_STATE_MESSAGE
+    _ss = pb.extract_inner(_m)
+    _npi = _ss.nowPlayingInfo
+    _npi.title = "Midnight City"
+    _npi.artist = "M83"
+    _npi.album = "Hurry Up, We're Dreaming"
+    _npi.duration = 240.0
+    _npi.elapsedTime = 63.5
+    _npi.playbackRate = 1.0
+    _ss.playbackState = pb.PlaybackState.Playing
+    _q = _ss.playbackQueue
+    _q.location = 0
+    _item = _q.contentItems.add()
+    _item.identifier = "item-1"
+    _item.artworkData = bytes(range(16))
+    _item.metadata.artworkMIMEType = "image/jpeg"
+    _item.metadata.title = "Midnight City"
+    out["mrp"]["set_state_full"] = H(_m.SerializeToString())
+
+    # A partial SET_STATE that only flips playback state to Paused.
+    _m2 = pb.ProtocolMessage()
+    _m2.type = pb.SET_STATE_MESSAGE
+    pb.extract_inner(_m2).playbackState = pb.PlaybackState.Paused
+    out["mrp"]["set_state_paused"] = H(_m2.SerializeToString())
+
+    # A SET_STATE that stops playback.
+    _m2b = pb.ProtocolMessage()
+    _m2b.type = pb.SET_STATE_MESSAGE
+    pb.extract_inner(_m2b).playbackState = pb.PlaybackState.Stopped
+    out["mrp"]["set_state_stopped"] = H(_m2b.SerializeToString())
+
+    # SET_NOW_PLAYING_CLIENT naming the owning app.
+    _m3 = pb.ProtocolMessage()
+    _m3.type = pb.SET_NOW_PLAYING_CLIENT_MESSAGE
+    _cl = pb.extract_inner(_m3).client
+    _cl.bundleIdentifier = "com.spotify.client"
+    _cl.displayName = "Spotify"
+    out["mrp"]["set_now_playing_client"] = H(_m3.SerializeToString())
+
+    # SET_NOW_PLAYING_CLIENT with no bundle -- the item went away.
+    _m4 = pb.ProtocolMessage()
+    _m4.type = pb.SET_NOW_PLAYING_CLIENT_MESSAGE
+    pb.extract_inner(_m4).client.processIdentifier = 0
+    out["mrp"]["set_now_playing_client_empty"] = H(_m4.SerializeToString())
+
+    # The three messages the client sends to open a subscription, plus the artwork request,
+    # so the Kotlin writer can be checked byte for byte.
+    _dev = pb.ProtocolMessage()
+    _dev.type = pb.DEVICE_INFO_MESSAGE
+    _di = pb.extract_inner(_dev)
+    _di.uniqueIdentifier = "AA:BB:CC:DD:EE:01"
+    _di.name = "Light Phone"
+    _di.localizedModelName = "iPhone"
+    _di.applicationBundleIdentifier = "com.apple.TVRemote"
+    _di.applicationBundleVersion = "344.28"
+    _di.protocolVersion = 1
+    _di.lastSupportedMessageType = 108
+    _di.supportsSystemPairing = True
+    _di.allowsPairing = True
+    _di.supportsACL = True
+    _di.supportsSharedQueue = True
+    _di.supportsExtendedMotion = True
+    _di.deviceClass = pb.DeviceClass.iPhone
+    _di.logicalDeviceCount = 1
+    # Field order in a serialized message is ascending field number regardless of set order,
+    # so this matches the Kotlin writer as long as the same fields are present.
+    out["mrp"]["device_info_fields"] = H(_dev.SerializeToString())
+
+    _cs = pb.ProtocolMessage()
+    _cs.type = pb.SET_CONNECTION_STATE_MESSAGE
+    pb.extract_inner(_cs).state = pb.SetConnectionStateMessage.Connected
+    # uniqueIdentifier omitted here: it is random in the real message. The test compares only
+    # the inner message and type, not the whole envelope, for the ones we send.
+    out["mrp"]["set_connection_state_inner"] = H(_cs.SerializeToString())
+
+    _cu = pb.ProtocolMessage()
+    _cu.type = pb.CLIENT_UPDATES_CONFIG_MESSAGE
+    _cuc = pb.extract_inner(_cu)
+    _cuc.artworkUpdates = True
+    _cuc.nowPlayingUpdates = True
+    _cuc.volumeUpdates = True
+    _cuc.keyboardUpdates = False
+    _cuc.outputDeviceUpdates = True
+    out["mrp"]["client_updates_config_inner"] = H(_cu.SerializeToString())
+
+    _pq = pb.ProtocolMessage()
+    _pq.type = pb.PLAYBACK_QUEUE_REQUEST_MESSAGE
+    _pqr = pb.extract_inner(_pq)
+    _pqr.location = 0
+    _pqr.length = 1
+    _pqr.artworkWidth = 512.0
+    _pqr.artworkHeight = 512.0
+    _pqr.returnContentItemAssetsInUserCompletion = True
+    out["mrp"]["playback_queue_request_inner"] = H(_pq.SerializeToString())
+except Exception as _mrp_err:  # noqa: BLE001
+    print("MRP vector generation skipped:", _mrp_err, file=sys.stderr)
+    out["mrp"] = {}
+
 # ---------------------------------------------------------------- flat output
 # A .properties file rather than JSON: unit tests can read it with java.util.Properties
 # and need no JSON dependency, which keeps them runnable under bare kotlinc too.
@@ -335,6 +465,11 @@ lines.append("x25519.count=%d" % len(out["x25519"]))
 lines.append("opack.names=" + ",".join(c["name"] for c in out["opack"]))
 lines.append("opackdec.names=" + ",".join(c["name"] for c in out["opack_decode"]))
 lines.append("tlv8.names=" + ",".join(c["name"] for c in out["tlv8"]))
+for _k, _v in out.get("mrp", {}).items():
+    lines.append(f"mrp.{_k}={_v}")
+if out.get("mrp"):
+    lines.append("mrp.names=" + ",".join(out["mrp"].keys()))
+
 
 import os  # noqa: E402
 dest = os.environ.get("VEC_DEST", "vectors.properties")

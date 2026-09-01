@@ -3,6 +3,7 @@ package com.gios.lightremote.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -31,10 +32,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -45,6 +51,7 @@ import com.gios.lightremote.companion.PowerState
 import com.gios.lightremote.companion.TouchPhase
 import com.gios.lightremote.hw.LocalVolumeBus
 import com.gios.lightremote.hw.WheelSteps
+import com.gios.lightremote.proto.MrpNowPlaying
 import com.gios.lightremote.proto.NowPlayingInfo
 import com.gios.lightremote.ui.theme.LightColors
 import com.gios.lightremote.ui.theme.LightGrid
@@ -177,6 +184,7 @@ fun RemoteScreen(
                 // Purely for visibility — no scrub, no tap. Drawn only when the television has
                 // something measurable playing (see [NowPlayingInfo.fraction]); otherwise it
                 // is a single rule line, which reads as nothing.
+                NowPlayingArt(state.mrpNowPlaying)
                 NowPlayingProgress(state.nowPlaying)
             }
         },
@@ -677,6 +685,61 @@ private fun NowPlayingProgress(info: NowPlayingInfo?) {
                 .fillMaxHeight()
                 .background(LightColors.Content),
         )
+    }
+}
+
+/**
+ * The now-playing line MRP gives us that Companion cannot: a title, an artist, and the artwork
+ * Gio asked for. Drawn only when the tunnel has something to show — otherwise nothing, so a
+ * remote with no metadata looks exactly as it did before.
+ *
+ * A quiet strip: a small square of cover, the title, and the artist beneath it. The transport
+ * itself is elsewhere on the screen; this is the label, not another set of buttons.
+ */
+@Composable
+private fun NowPlayingArt(info: MrpNowPlaying?) {
+    if (info == null || (info.title == null && info.artist == null)) return
+    val artwork = remember(info.artwork) {
+        info.artwork?.let { bytes ->
+            runCatching { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+                .getOrNull()?.asImageBitmap()
+        }
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (artwork != null) {
+            Image(
+                bitmap = artwork,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(4.dp)),
+            )
+            Spacer(Modifier.width(10.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            info.title?.let {
+                Text(
+                    text = it,
+                    color = LightColors.Content,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            info.artist?.let {
+                Text(
+                    text = it,
+                    color = LightColors.ContentSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 
