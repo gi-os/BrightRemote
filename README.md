@@ -3,7 +3,7 @@
 # BrightRemote
 
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
-released version: **v1.14.x**; the tracked source is at `1.15.0` pending its release tag.
+released version: **v1.25.x**.
 
 ## Install via BrightMarket
 
@@ -156,7 +156,14 @@ in an uncancellable `finally`, the wait is two seconds rather than eight (presse
 so one stall blocks the rest), and a run of three unanswered presses raises a banner. Power is
 the exception and still throws: a set that refuses Sleep has to say so.
 
-**Not implemented:** now-playing title or album art — that needs the MRP/AirPlay 2 stack above.
+**Now-playing title and artwork** ride the MRP/AirPlay 2 stack above, and need one extra,
+optional pairing. An Apple TV only opens that stream to a controller holding *persistent*
+AirPlay-HAP credentials (transient pairing is a HomePod feature), so the remote works fully
+without it and a quiet **Pair for now playing** row appears instead — on the remote itself
+while connected, and on each paired device's own screen. Tapping it is the only thing in the
+app that makes the TV display an AirPlay code; type the four digits on the same keypad the
+Companion pairing uses and the metadata appears on this and every later connect. Forgetting a
+device forgets both pairings.
 
 ## Configuration and usage
 

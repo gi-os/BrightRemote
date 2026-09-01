@@ -20,6 +20,7 @@ import com.gios.lightremote.proto.NowPlayingInfo
 import com.gios.lightremote.proto.Mrp
 import com.gios.lightremote.proto.MrpNowPlaying
 import com.gios.lightremote.airplay.AirPlayAuth
+import com.gios.lightremote.airplay.AirPlayPinSetup
 import com.gios.lightremote.airplay.MrpTunnel
 import com.gios.lightremote.media.RemoteMediaSession
 import com.gios.lightremote.service.RemoteService
@@ -82,6 +83,14 @@ data class RemoteUiState(
      * remote screen shows the art when it is present, and it feeds the media session.
      */
     val mrpNowPlaying: MrpNowPlaying? = null,
+    /**
+     * True while a television is connected whose MRP tunnel could not come up silently —
+     * pair-verify had nothing stored (or was refused) and transient pairing was refused,
+     * which is every real Apple TV that has not been PIN-paired yet. It drives exactly one
+     * thing: the quiet "Pair for now playing" row. Never a banner, never a popup, and never
+     * an automatic pair-setup — that would put a code on the television uninvited.
+     */
+    val mrpPairable: Boolean = false,
     val apps: List<InstalledApp> = emptyList(),
     val appsLoading: Boolean = false,
     val pinned: Set<String> = emptySet(),
@@ -153,6 +162,15 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The connect attempt in flight, so a second one cannot start beside it. */
     private var connectJob: Job? = null
+
+    /** The interactive AirPlay pairing in flight, if the user asked for one. */
+    private var airPlaySetup: AirPlayPinSetup? = null
+
+    /** Which device that pairing is for — not necessarily the connected one. */
+    private var airPlayTarget: PairedDevice? = null
+
+    /** The address the live Companion session actually connected to (it can move). */
+    private var activeHost: String? = null
 
     /**
      * Decides whether a failure gets filed, and folds a burst of them into one report.
@@ -376,6 +394,131 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ------------------------------------------------------------------ AirPlay pairing (by hand)
+
+    /**
+     * Start the interactive AirPlay pairing — the one that puts a code on the television.
+     *
+     * Reached from exactly two taps: the "Pair for now playing" row on the remote (for the
+     * connected TV) and the same row on a device's own screen. [device] is null for the
+     * first, which targets whatever is connected. This is deliberately the only call in the
+     * app that can make a TV display an AirPlay code; everything the connect path does is
+     * silent by rule.
+     *
+     * Reuses the Companion pairing's PIN state (pairingPin, pairingBusy, pairingDeviceName):
+     * the two flows share one screen pattern and can never run at once.
+     */
+    fun beginAirPlayPairing(device: PairedDevice? = null) {
+        val target = device
+            ?: prefs.devices().firstOrNull { it.id == activeDeviceId }
+            ?: return
+        airPlaySetup?.closeQuietly()
+        airPlayTarget = target
+        // The live session's address beats the stored one — it is the one that answered.
+        val host = if (target.id == activeDeviceId) activeHost ?: target.host else target.host
+        val setup = AirPlayPinSetup(host = host)
+        airPlaySetup = setup
+        _state.value = _state.value.copy(
+            pairingDeviceName = target.name,
+            pairingPin = "",
+            pairingBusy = true,
+            error = null,
+        )
+        viewModelScope.launch {
+            runCatching { setup.begin() }
+                .onSuccess { _state.value = _state.value.copy(pairingBusy = false) }
+                .onFailure { error ->
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    cancelAirPlayPairing()
+                    _state.value = _state.value.copy(error = error.friendlyMessage())
+                }
+        }
+    }
+
+    fun submitAirPlayPin(onPaired: () -> Unit) {
+        val setup = airPlaySetup ?: return
+        val target = airPlayTarget ?: return
+        val pin = _state.value.pairingPin
+        if (pin.length < 4) return
+
+        _state.value = _state.value.copy(pairingBusy = true, error = null)
+        viewModelScope.launch {
+            runCatching { setup.complete(pin, displayName = "Light Phone") }
+                .onSuccess { credentials ->
+                    // The only write, and it happens strictly after the exchange finished —
+                    // an abort anywhere earlier stores nothing at all.
+                    prefs.saveAirPlayCredentials(target.id, credentials)
+                    airPlaySetup = null
+                    airPlayTarget = null
+                    _state.value = _state.value.copy(
+                        pairingDeviceName = null,
+                        pairingPin = "",
+                        pairingBusy = false,
+                        paired = prefs.devices(),
+                        mrpPairable = false,
+                    )
+                    // The whole point: if this TV is on the remote right now, bring the
+                    // tunnel up with the new credentials without asking for a reconnect.
+                    if (target.id == activeDeviceId &&
+                        _state.value.connection == ConnectionState.Connected
+                    ) {
+                        prefs.devices().firstOrNull { it.id == target.id }?.let {
+                            startMrp(it, activeHost ?: it.host)
+                        }
+                    }
+                    onPaired()
+                }
+                .onFailure { error ->
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    // A wrong code kills the whole exchange on the device side — HAP forbids
+                    // resuming SRP after a failed proof — so the only honest retry is a fresh
+                    // pair-setup, which is also a fresh code on the screen. Say so, restart
+                    // it, and keep the keypad up. Anything that is not a code problem (the TV
+                    // dismissed its dialog, the network went away) aborts cleanly instead.
+                    val wrongCode = error is AuthenticationException &&
+                        (error.message?.contains("PIN") == true || error.message?.contains("code") == true)
+                    if (wrongCode) {
+                        _state.value = _state.value.copy(
+                            pairingPin = "",
+                            error = "That code did not match. The TV will show a new one.",
+                        )
+                        runCatching { setup.begin() }
+                            .onSuccess { _state.value = _state.value.copy(pairingBusy = false) }
+                            .onFailure { again ->
+                                if (again is kotlinx.coroutines.CancellationException) throw again
+                                cancelAirPlayPairing()
+                                _state.value = _state.value.copy(error = again.friendlyMessage())
+                            }
+                    } else {
+                        cancelAirPlayPairing()
+                        _state.value = _state.value.copy(error = error.friendlyMessage())
+                    }
+                }
+        }
+    }
+
+    fun cancelAirPlayPairing() {
+        airPlaySetup?.closeQuietly()
+        airPlaySetup = null
+        airPlayTarget = null
+        _state.value = _state.value.copy(
+            pairingDeviceName = null,
+            pairingPin = "",
+            pairingBusy = false,
+        )
+    }
+
+    /**
+     * The app left the foreground. The one thing that must not survive that is a half-done
+     * AirPlay pairing: the exchange is stateful on both ends, the code on the television
+     * will be stale by the time we are back, and credentials are only ever stored after
+     * [submitAirPlayPin] completes — so aborting here can never leave half a pairing behind.
+     * The Companion session is deliberately untouched; it has its own resume path.
+     */
+    fun onBackground() {
+        if (airPlaySetup != null) cancelAirPlayPairing()
+    }
+
     // ------------------------------------------------------------------ connection
 
     /**
@@ -583,6 +726,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         connectJob?.cancel()
         connectJob = null
         activeDeviceId = null
+        activeHost = null
         lostReconnects = 0
         teardownConnectionSideEffects()
         client.disconnect()
@@ -796,6 +940,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         super.onCleared()
         idleJob?.cancel()
+        airPlaySetup?.closeQuietly()
         stopMrp()
         mediaSession.release()
         RemoteService.stop(app)
@@ -810,9 +955,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      * idle timer. Brought up here on a successful connect.
      */
     private fun onConnected(device: PairedDevice, host: String) {
+        activeHost = host
         RemoteService.start(app, device.name)
         resetIdleTimer()
-        startMrp(host)
+        startMrp(device, host)
         updateMediaSession()
     }
 
@@ -822,7 +968,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         idleJob = null
         stopMrp()
         mediaSession.deactivate()
-        _state.value = _state.value.copy(mrpNowPlaying = null)
+        _state.value = _state.value.copy(mrpNowPlaying = null, mrpPairable = false)
         RemoteService.stop(app)
     }
 
@@ -836,8 +982,9 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      * wrapped and swallowed, and it files no report of its own; the Companion session is the
      * thing worth reporting on, and it is untouched by whatever happens here.
      */
-    private fun startMrp(host: String) {
+    private fun startMrp(device: PairedDevice, host: String) {
         stopMrp()
+        _state.value = _state.value.copy(mrpPairable = false)
         val tunnel = MrpTunnel(host = host, deviceId = prefs.identity.deviceId, scope = viewModelScope)
         tunnel.onNowPlaying = { np ->
             viewModelScope.launch {
@@ -847,12 +994,28 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         }
         mrpTunnel = tunnel
         viewModelScope.launch {
-            runCatching { tunnel.connect(auth = AirPlayAuth.Transient) }
-                .onFailure { error ->
-                    if (error is kotlinx.coroutines.CancellationException) throw error
-                    Trace.problem("mrp: tunnel unavailable, no metadata", error)
-                    stopMrp()
-                }
+            // On connect, MRP may silently try exactly two things: pair-verify with stored
+            // AirPlay credentials, and transient pairing. Both are invisible from the sofa.
+            // PIN pair-setup — the thing that makes a television draw four digits — is never
+            // among them; the only route to it is beginAirPlayPairing, on a tap. If neither
+            // silent path works, MRP stays off: no metadata, no banner, one trace line, and
+            // the UI offers the pairing row instead.
+            val attempts = buildList {
+                device.airPlayCredentials?.let { add(AirPlayAuth.WithCredentials(it)) }
+                add(AirPlayAuth.Transient)
+            }
+            var lastError: Throwable? = null
+            for (auth in attempts) {
+                val result = runCatching { tunnel.connect(auth = auth) }
+                val error = result.exceptionOrNull() ?: return@launch // connected
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                lastError = error
+            }
+            Trace.problem("mrp: tunnel unavailable, no metadata", lastError!!)
+            stopMrp()
+            _state.value = _state.value.copy(
+                mrpPairable = _state.value.connection == ConnectionState.Connected,
+            )
         }
     }
 

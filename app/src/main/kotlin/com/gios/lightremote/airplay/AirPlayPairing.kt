@@ -76,10 +76,20 @@ class AirPlayPairing(private val channel: RtspChannel) {
 
     // ------------------------------------------------------------------ transient
 
-    /** Transient pairing (M1–M3, PIN 3939), yielding session keys with nothing stored. */
+    /**
+     * Transient pairing (M1–M3, PIN 3939), yielding session keys with nothing stored.
+     *
+     * Deliberately does NOT touch `/pair-pin-start`. That endpoint has exactly one effect on
+     * tvOS: it puts a four-digit pairing code on the television. Transient pairing never needs
+     * one — the PIN is the well-known 3939 — but this function used to open with that POST
+     * anyway, copying the shape of the interactive flow. Against the fake receiver (which
+     * answers 200 and moves on) it was invisible; against a real Apple TV it drew a PIN prompt
+     * over whatever was playing, then the SRP exchange failed because tvOS does not support
+     * transient pairing at all, the tunnel quietly gave up — and the code stayed on the screen
+     * with nowhere in the app to type it. A silent probe must stay silent: the only route to
+     * `/pair-pin-start` is [beginPairSetup], which only ever runs because the user asked.
+     */
     fun transient(): AirPlayKeys {
-        post("/pair-pin-start", hkp = 4, body = null)
-
         val m1 = Tlv8.write(
             linkedMapOf(
                 Tlv8.METHOD to byteArrayOf(0x00),

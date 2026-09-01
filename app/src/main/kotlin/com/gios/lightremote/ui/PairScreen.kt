@@ -22,7 +22,7 @@ import com.gios.lightremote.ui.theme.gridDp
 import com.gios.lightremote.ui.theme.lightClickable
 
 /**
- * PIN entry.
+ * PIN entry for the Companion pairing — the code Settings > Remotes puts on the screen.
  *
  * A custom keypad rather than the system keyboard: the code is always four digits, the
  * eyes are on the television while typing, and the LP3's keyboard would cover most of the
@@ -30,6 +30,32 @@ import com.gios.lightremote.ui.theme.lightClickable
  */
 @Composable
 fun PairScreen(vm: RemoteViewModel, onPaired: () -> Unit, onCancel: () -> Unit) {
+    PinEntryScreen(
+        vm = vm,
+        onSubmit = { vm.submitPin(onPaired) },
+        onCancel = { vm.cancelPairing(); onCancel() },
+    )
+}
+
+/**
+ * PIN entry for the AirPlay pairing — the code the TV shows for "Pair for now playing".
+ *
+ * The same screen to the eye and the thumb as [PairScreen]; only the exchange behind the
+ * Pair button differs. Navigating here is what asked the TV to draw the code (see
+ * [RemoteViewModel.beginAirPlayPairing]); a wrong code restarts the exchange and the TV
+ * shows a new one, so the screen just stays up and says so.
+ */
+@Composable
+fun AirPlayPairScreen(vm: RemoteViewModel, onPaired: () -> Unit, onCancel: () -> Unit) {
+    PinEntryScreen(
+        vm = vm,
+        onSubmit = { vm.submitAirPlayPin(onPaired) },
+        onCancel = { vm.cancelAirPlayPairing(); onCancel() },
+    )
+}
+
+@Composable
+private fun PinEntryScreen(vm: RemoteViewModel, onSubmit: () -> Unit, onCancel: () -> Unit) {
     val state by vm.state.collectAsStateWithLifecycle()
 
     Scaffold(
@@ -38,12 +64,12 @@ fun PairScreen(vm: RemoteViewModel, onPaired: () -> Unit, onCancel: () -> Unit) 
         bottomBar = {
             LightBottomBar(
                 listOf(
-                    BarAction("Cancel") { vm.cancelPairing(); onCancel() },
+                    BarAction("Cancel") { onCancel() },
                     BarAction("Delete", enabled = state.pairingPin.isNotEmpty()) { vm.deletePinDigit() },
                     BarAction(
                         "Pair",
                         enabled = state.pairingPin.length == 4 && !state.pairingBusy,
-                    ) { vm.submitPin(onPaired) },
+                    ) { onSubmit() },
                 ),
             )
         },

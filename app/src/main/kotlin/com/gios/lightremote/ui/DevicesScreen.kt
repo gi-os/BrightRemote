@@ -155,30 +155,53 @@ private fun SectionLabel(text: String) {
     )
 }
 
-/** A tiny confirm step, because forgetting a device means pairing again from the TV. */
+/**
+ * One device's own screen: the AirPlay pairing row, then the forget confirm underneath.
+ *
+ * Forgetting stays a deliberate step, because it means pairing again from the TV — and it
+ * forgets both pairings at once, Companion and AirPlay alike.
+ */
 @Composable
 fun ForgetDeviceScreen(
     vm: RemoteViewModel,
     device: PairedDevice,
+    onPairAirPlay: (PairedDevice) -> Unit,
     onDone: () -> Unit,
 ) {
+    // Re-read from state so the row's sub-label flips to "Paired" the moment the AirPlay
+    // pairing completes and navigation lands back here — the argument is a snapshot.
+    val state by vm.state.collectAsStateWithLifecycle()
+    val current = state.paired.firstOrNull { it.id == device.id } ?: device
+
     Scaffold(
         containerColor = LightColors.Background,
-        topBar = { LightTopBar(device.name, onBack = onDone) },
+        topBar = { LightTopBar(current.name, onBack = onDone) },
         bottomBar = {
             LightBottomBar(
                 listOf(
                     BarAction("Cancel") { onDone() },
-                    BarAction("Forget") { vm.forget(device); onDone() },
+                    BarAction("Forget") { vm.forget(current); onDone() },
                 ),
             )
         },
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
-            CenteredMessage(
-                "Forget ${device.name}?",
-                "You will need the code from the TV to pair again.",
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            LightRow(
+                label = "Pair for now playing",
+                sub = if (current.airPlayCredentials != null) {
+                    "Paired — the remote shows titles and artwork"
+                } else {
+                    "Titles and artwork need a one-time code"
+                },
+                onClick = { onPairAirPlay(current) },
             )
+            Rule()
+            Box(Modifier.weight(1f)) {
+                CenteredMessage(
+                    "Forget ${current.name}?",
+                    "You will need the code from the TV to pair again.",
+                )
+            }
         }
     }
 }

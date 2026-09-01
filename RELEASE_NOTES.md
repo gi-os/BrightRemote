@@ -1,3 +1,56 @@
+## BrightRemote v1.25 — Pair for now playing
+
+### The pairing code came up on the TV, and there was nowhere to type it
+
+Field report from the sofa: "the pairing came up but I didn't see anywhere to type it." Both
+halves of that sentence were bugs.
+
+**The code should never have appeared.** The now-playing tunnel (v1.23) probes the AirPlay
+channel silently on every connect, using transient pairing — the no-code, nothing-stored mode.
+But the probe opened with a POST to `/pair-pin-start`, copied from the shape of the interactive
+flow, and that endpoint has exactly one effect on tvOS: it puts a four-digit pairing code on
+the television. Against the test receiver, which answers 200 and moves on, it was invisible.
+Against a real Apple TV it drew the prompt over whatever was playing, the transient exchange
+was then refused (tvOS doesn't do transient pairing — that is a HomePod feature), the tunnel
+quietly gave up as designed, and the code sat on the screen with nowhere to go. The probe no
+longer sends it. The rule is now written down and tested: on connect, MRP may silently try
+pair-verify with stored credentials and transient pairing, both invisible from the sofa —
+and if neither works it stays off. No banner, no dialog, one trace line. Nothing on any
+automatic path can put a code on a television; the regression test reads the fake receiver's
+request log and fails if anything resembling pair-setup or pin-start went out uninvited.
+
+**And when you *do* want the code, there is now somewhere to type it.** An Apple TV only opens
+its MRP stream to a controller holding persistent AirPlay-HAP credentials — a second pairing,
+separate from the Companion one that runs the buttons. The protocol side has been in since
+v1.23; this build adds the way in. A quiet **Pair for now playing** row appears in two places:
+on the remote, in the strip where the artwork will live, whenever a connected TV's tunnel
+could not come up silently — and on each paired device's own screen (hold the device in the
+list). Tapping the row is the moment the TV draws its code. The keypad that follows is the
+same screen, the same four slots and the same wheel of digits as the Companion pairing, and
+Pair finishes the exchange, stores the credentials and brings the tunnel up on the spot — no
+reconnect, titles and artwork just arrive.
+
+The details that make it honest:
+
+- **A wrong code says so and starts over.** HAP tears the exchange down after a failed proof,
+  so the retry is a fresh pair-setup — which means a fresh code on the TV. The screen says
+  exactly that ("That code did not match. The TV will show a new one."), clears the slots and
+  stays up.
+- **Leaving the app aborts cleanly.** The exchange is stateful on both ends and the code goes
+  stale, so backgrounding mid-pairing closes the socket and keeps nothing. Credentials are
+  only ever written after the exchange completes; there is no half-paired state to recover
+  or to clean up.
+- **One id, two pairings.** The AirPlay credentials live beside the Companion ones, keyed by
+  the same device, and forgetting a device forgets both.
+- **The remote is never hostage to the metadata.** Everything here is on the optional path:
+  a refused pairing, a dead AirPlay port, a TV that cancels — the Companion session never
+  notices.
+
+The fake AirPlay receiver grew the accessory half of PIN pair-setup and pair-verify to prove
+the loop: pairing stores credentials, the next connect pair-verifies with them and pairs no
+further, a refused transient with nothing stored sends nothing that could disturb the TV, and
+a wrong PIN fails cleanly then succeeds on a fresh exchange.
+
 ## BrightRemote v1.24 — The v1.23 launch crash
 
 ### v1.23.38 died within a second of opening; this build fixes it

@@ -28,6 +28,7 @@ import com.gios.lightremote.hw.LocalWheelBus
 import com.gios.lightremote.hw.VolumeBus
 import com.gios.lightremote.hw.WheelBus
 import com.gios.lightremote.ui.AddressScreen
+import com.gios.lightremote.ui.AirPlayPairScreen
 import com.gios.lightremote.ui.AppsScreen
 import com.gios.lightremote.ui.DevicesScreen
 import com.gios.lightremote.ui.ForgetDeviceScreen
@@ -129,6 +130,10 @@ class MainActivity : ComponentActivity() {
                 DisposableEffect(vm) {
                     val observer = LifecycleEventObserver { _, event ->
                         if (event == Lifecycle.Event.ON_RESUME) vm.onForeground()
+                        // Leaving the app mid-AirPlay-pairing aborts it cleanly: the code on
+                        // the TV will be stale by the time we return, and nothing is stored
+                        // until the exchange finishes, so there is nothing half-done to keep.
+                        if (event == Lifecycle.Event.ON_STOP) vm.onBackground()
                     }
                     lifecycle.addObserver(observer)
                     onDispose { lifecycle.removeObserver(observer) }
@@ -188,6 +193,15 @@ class MainActivity : ComponentActivity() {
                                 onCancel = { nav.popBackStack("devices", inclusive = false) },
                             )
                         }
+                        composable("airplay-pair") {
+                            AirPlayPairScreen(
+                                vm = vm,
+                                // Back to wherever the offer was tapped — the remote, or the
+                                // device's own screen, whose row now reads "Paired".
+                                onPaired = { nav.popBackStack() },
+                                onCancel = { nav.popBackStack() },
+                            )
+                        }
                         composable("forget") {
                             val device = managing
                             if (device == null) {
@@ -196,6 +210,11 @@ class MainActivity : ComponentActivity() {
                                 ForgetDeviceScreen(
                                     vm = vm,
                                     device = device,
+                                    onPairAirPlay = { target ->
+                                        // This tap is the moment the TV draws its code.
+                                        vm.beginAirPlayPairing(target)
+                                        nav.navigate("airplay-pair")
+                                    },
                                     onDone = {
                                         managing = null
                                         nav.popBackStack("devices", inclusive = false)
@@ -211,6 +230,10 @@ class MainActivity : ComponentActivity() {
                                 onOpenDevices = { nav.navigate("devices") },
                                 onOpenApps = { nav.navigate("apps") },
                                 onOpenKeyboard = { nav.navigate("keyboard") },
+                                onPairNowPlaying = {
+                                    vm.beginAirPlayPairing()
+                                    nav.navigate("airplay-pair")
+                                },
                             )
                         }
                         composable("apps") {

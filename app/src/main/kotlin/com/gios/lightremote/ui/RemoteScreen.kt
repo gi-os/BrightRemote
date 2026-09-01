@@ -75,6 +75,7 @@ fun RemoteScreen(
     onOpenDevices: () -> Unit,
     onOpenApps: () -> Unit,
     onOpenKeyboard: () -> Unit,
+    onPairNowPlaying: () -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     var touchpad by remember { mutableStateOf(vm.preferTouchpad) }
@@ -186,6 +187,19 @@ fun RemoteScreen(
                 // is a single rule line, which reads as nothing.
                 NowPlayingArt(state.mrpNowPlaying)
                 NowPlayingProgress(state.nowPlaying)
+                // The tunnel could not come up silently and nothing is stored to verify
+                // with — this Apple TV wants its one-time AirPlay code. One quiet row in the
+                // space where the artwork will live, an offer rather than a prompt: nothing
+                // touches the television until this is tapped, and tapping it is precisely
+                // the moment the TV draws the code (with, this time, a keypad behind it).
+                if (connected && state.mrpPairable) {
+                    LightRow(
+                        label = "Pair for now playing",
+                        sub = "Titles and artwork need a one-time code",
+                        onClick = onPairNowPlaying,
+                    )
+                    Rule()
+                }
             }
         },
         bottomBar = {

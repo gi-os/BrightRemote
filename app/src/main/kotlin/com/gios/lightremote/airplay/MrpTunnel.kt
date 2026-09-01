@@ -44,6 +44,9 @@ class MrpTunnel(
         private set
 
     suspend fun connect(port: Int = DEFAULT_AIRPLAY_PORT, auth: AirPlayAuth = AirPlayAuth.Transient) {
+        // A second attempt (verify failed, caller now trying transient) must not leak the
+        // half-open control socket of the first.
+        runCatching { session?.close() }
         val s = AirPlaySession(host, port, deviceId, scope)
         s.onProtobuf = ::onProtobuf
         session = s

@@ -6,13 +6,22 @@ import com.gios.lightremote.companion.ClientIdentity
 import com.gios.lightremote.companion.Credentials
 import java.security.SecureRandom
 
-/** A TV we have paired with before. */
+/**
+ * A TV we have paired with before.
+ *
+ * Two credential sets, because an Apple TV wants two pairings: [credentials] is the
+ * Companion pairing (the remote itself — buttons, touch, apps, text), and
+ * [airPlayCredentials] is the AirPlay-HAP pairing that lets the MRP tunnel pair-verify for
+ * now-playing titles and artwork. The second is optional — the remote is complete without
+ * it — and null simply means "not paired for now playing yet".
+ */
 data class PairedDevice(
     val id: String,
     val name: String,
     val host: String,
     val port: Int,
     val credentials: Credentials,
+    val airPlayCredentials: Credentials? = null,
 )
 
 /**
@@ -59,6 +68,8 @@ class Prefs(context: Context) {
                 host = prefs.getString("$id.host", null) ?: return@mapNotNull null,
                 port = prefs.getInt("$id.port", 49152),
                 credentials = credentials,
+                airPlayCredentials = prefs.getString("$id.airplay", null)
+                    ?.let { Credentials.parse(it) },
             )
         }.sortedBy { it.name.lowercase() }
     }
@@ -72,7 +83,22 @@ class Prefs(context: Context) {
             .putString("${device.id}.host", device.host)
             .putInt("${device.id}.port", device.port)
             .putString("${device.id}.credentials", device.credentials.serialize())
+            .apply {
+                // Written only when present: re-pairing Companion must not wipe an AirPlay
+                // pairing that is still perfectly good, so a null here means "leave it be".
+                device.airPlayCredentials?.let {
+                    putString("${device.id}.airplay", it.serialize())
+                }
+            }
             .apply()
+    }
+
+    /**
+     * Store the AirPlay-HAP credentials for a device already paired over Companion. Kept
+     * under the same id, so forgetting the device forgets both sets at once.
+     */
+    fun saveAirPlayCredentials(id: String, credentials: Credentials) {
+        prefs.edit().putString("$id.airplay", credentials.serialize()).apply()
     }
 
     /** Addresses move when a router reboots; the credentials stay valid. */
@@ -89,6 +115,7 @@ class Prefs(context: Context) {
             .remove("$id.host")
             .remove("$id.port")
             .remove("$id.credentials")
+            .remove("$id.airplay")
             .apply()
     }
 
