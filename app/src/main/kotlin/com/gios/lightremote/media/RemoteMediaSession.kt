@@ -2,6 +2,8 @@ package com.gios.lightremote.media
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
@@ -24,6 +26,22 @@ import com.gios.lightremote.proto.MrpNowPlaying
  * something is playing or paused; deactivated the moment playback stops or the item goes away;
  * and buffering-like states (interrupted, seeking) are reported as playing rather than as a
  * stop, because a lock face that sees STATE_NONE for two seconds treats it as the session dying.
+ *
+ * ### Threading
+ *
+ * Callable from any thread; everything that touches the platform session runs on the main
+ * looper. This is not a nicety — it is the fix for the v1.23.38 launch crash. The view model
+ * reaches this object lazily from wherever now-playing changes, and one of those places is the
+ * Companion socket's reader, a `Dispatchers.IO` worker with no [Looper]. `MediaSessionCompat`'s
+ * one-argument `setCallback(callback)` does `new Handler()` on the calling thread (its
+ * constructor guards against a looper-less thread; `setCallback` does not), so first touch from
+ * the reader threw `RuntimeException: Can't create handler inside thread ... that has not called
+ * Looper.prepare()`, and with the phone auto-connecting on launch the app died within a second
+ * of opening, every time. Hence two rules here, and both stay:
+ *
+ *  - the callback is registered with an explicit main-looper [Handler];
+ *  - [update], [deactivate] and [release] hop to the main thread before touching [session]
+ *    (which also keeps [lastArtwork] single-threaded).
  */
 class RemoteMediaSession(context: Context, private val controls: Controls) {
 
@@ -35,14 +53,20 @@ class RemoteMediaSession(context: Context, private val controls: Controls) {
         fun seekTo(positionMs: Long)
     }
 
+    private val main = Handler(Looper.getMainLooper())
+
     private val session = MediaSessionCompat(context, "BrightRemote").apply {
-        setCallback(object : MediaSessionCompat.Callback() {
-            override fun onPlay() = controls.playPause()
-            override fun onPause() = controls.playPause()
-            override fun onSkipToNext() = controls.nextTrack()
-            override fun onSkipToPrevious() = controls.previousTrack()
-            override fun onSeekTo(pos: Long) = controls.seekTo(pos)
-        })
+        setCallback(
+            object : MediaSessionCompat.Callback() {
+                override fun onPlay() = controls.playPause()
+                override fun onPause() = controls.playPause()
+                override fun onSkipToNext() = controls.nextTrack()
+                override fun onSkipToPrevious() = controls.previousTrack()
+                override fun onSeekTo(pos: Long) = controls.seekTo(pos)
+            },
+            // Explicit handler, never the one-argument overload — see the threading note above.
+            Handler(Looper.getMainLooper()),
+        )
     }
 
     /** The last artwork bytes turned into metadata, so a redraw does not decode them again. */
@@ -54,10 +78,10 @@ class RemoteMediaSession(context: Context, private val controls: Controls) {
      * @param title a fallback label when MRP has no title of its own — "Apple TV" when the only
      *   source is Companion's now-playing, which carries a position but no name.
      */
-    fun update(nowPlaying: MrpNowPlaying?, fallbackTitle: String) {
+    fun update(nowPlaying: MrpNowPlaying?, fallbackTitle: String) = onMain {
         if (nowPlaying == null || nowPlaying.playbackState == Mrp.PlaybackState.Stopped) {
-            deactivate()
-            return
+            deactivateNow()
+            return@onMain
         }
 
         val metadata = MediaMetadataCompat.Builder()
@@ -108,7 +132,10 @@ class RemoteMediaSession(context: Context, private val controls: Controls) {
     }
 
     /** Drop the session inactive — the lock face's rule for "playback stopped or item gone". */
-    fun deactivate() {
+    fun deactivate() = onMain { deactivateNow() }
+
+    /** The body of [deactivate], for callers already on the main thread. */
+    private fun deactivateNow() {
         if (session.isActive) {
             session.setPlaybackState(
                 PlaybackStateCompat.Builder()
@@ -120,8 +147,17 @@ class RemoteMediaSession(context: Context, private val controls: Controls) {
         lastArtwork = null
     }
 
-    fun release() {
-        deactivate()
+    fun release() = onMain {
+        deactivateNow()
         session.release()
+    }
+
+    /**
+     * Run [block] on the main thread — immediately when already there, posted otherwise. Posts
+     * from one thread land in order, so a burst of [update]s followed by a [deactivate] plays
+     * back in the order it was sent.
+     */
+    private fun onMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
     }
 }

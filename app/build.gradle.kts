@@ -32,7 +32,7 @@ android {
         targetSdk = 35
         // CI overwrites both from the workflow run number; see .github/workflows/build.yml
         versionCode = 1
-        versionName = "1.23.0"
+        versionName = "1.24.0"
 
         // LightReport.install reads this at startup; light-common has its own BuildConfig,
         // so the app's key has to be handed in rather than looked up across the boundary.

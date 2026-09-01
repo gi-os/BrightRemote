@@ -1,3 +1,31 @@
+## BrightRemote v1.24 — The v1.23 launch crash
+
+### v1.23.38 died within a second of opening; this build fixes it
+
+v1.23 added a media session so BrightControl's lock face grows a now-playing row over this
+remote. What it got wrong was a thread. The view model builds that session lazily, on whichever
+thread first needs it — and with a television paired the first thread to need it is the
+Companion socket's reader, because tvOS starts pushing `_iMC` and `NowPlayingInfo` events the
+moment the connection comes up. That reader is a coroutine IO worker with no `Looper`, and
+`MediaSessionCompat.setCallback(callback)` creates a bare `Handler()` on the calling thread, so
+the first event threw `RuntimeException: Can't create handler inside thread ... that has not
+called Looper.prepare()`. The teardown that followed touched the same lazy session from the
+same thread, threw the same way outside the reader's catch, and took the process down.
+
+Since the app auto-connects on launch, that sequence ran to completion in under a second, every
+time: open, connect, die. It never appeared in CI because the JVM test stubs no-op `Handler`,
+and it filed no report because the crash-loop outran the reporter.
+
+The fix is in `RemoteMediaSession`, which now owns its threading instead of trusting its
+callers: the callback is registered with an explicit main-looper handler, and `update`,
+`deactivate` and `release` hop to the main thread before touching the platform session. Any
+future caller, from any thread, gets the safe path — that is the regression guard.
+
+Everything v1.23 added — the foreground service that keeps the link alive with the screen off,
+the lock-face media row, the MRP-over-AirPlay now-playing with title, artist and artwork — is
+unchanged and still in. Updating over v1.23.38 (or any earlier build) is a plain Obtainium
+update; nothing needs uninstalling.
+
 ## BrightRemote v1.22 — Skip, without opening the drawer
 
 ### The D-pad's dead corners are now back-15 and forward-15
