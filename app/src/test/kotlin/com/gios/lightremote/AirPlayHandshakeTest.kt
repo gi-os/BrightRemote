@@ -152,6 +152,54 @@ class AirPlayHandshakeTest {
     }
 
     @Test
+    fun `the M5 display name is an OPACK dictionary, which is what real tvOS parses`() {
+        // The v1.25 field failure. The client sent TLV 0x11 as raw UTF-8; tvOS parses that
+        // field as OPACK (pyatv has packed it as {"name": ...} since aa23a11), answered M6
+        // with neither credentials nor an error, and the pairing died on "no credentials
+        // returned" after the code had been typed correctly. The fake now decodes the name
+        // exactly as strictly as the television, so this test fails against the v1.25 client.
+        FakeAirPlayReceiver(pin = "1122").use { receiver ->
+            receiver.start()
+            withScope {
+                val setup = AirPlayPinSetup(host = "127.0.0.1", port = receiver.port)
+                setup.begin()
+                val credentials = setup.complete("1122", displayName = "Light Phone")
+                receiver.failure?.let { throw AssertionError("receiver rejected pair-setup", it) }
+                assertEquals(
+                    listOf("Light Phone"),
+                    receiver.pairSetupNames,
+                    "the receiver decoded the display name from OPACK, like tvOS does",
+                )
+                assertNotNull(receiver.pairedClientLtpk, "a well-formed M5 stores the client key")
+                assertTrue(credentials.devicePublicKey.isNotEmpty())
+            }
+        }
+    }
+
+    @Test
+    fun `a reply with no credentials names the step instead of shrugging`() {
+        // The error surface half of the same bug: when a TV answers M5 with a bare state —
+        // which is what real tvOS does to an M5 it cannot stomach — the failure must say
+        // where the exchange died, because "no credentials returned" cost an evening of
+        // blind debugging from the sofa.
+        FakeAirPlayReceiver(pin = "7788", withholdCredentials = true).use { receiver ->
+            receiver.start()
+            withScope {
+                val setup = AirPlayPinSetup(host = "127.0.0.1", port = receiver.port)
+                setup.begin()
+                val result = runCatching { setup.complete("7788", displayName = "Light Phone") }
+                assertTrue(result.isFailure, "no credentials can come out of a bare M6")
+                val error = result.exceptionOrNull()
+                assertTrue(error is AuthenticationException, "a protocol failure, not a crash: $error")
+                assertTrue(
+                    error!!.message!!.contains("step 6"),
+                    "the failure names the step that broke: ${error.message}",
+                )
+            }
+        }
+    }
+
+    @Test
     fun `a wrong PIN fails cleanly and pairing succeeds on a fresh exchange`() {
         FakeAirPlayReceiver(pin = "4321").use { receiver ->
             receiver.start()

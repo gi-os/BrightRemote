@@ -2,10 +2,12 @@ package com.gios.lightremote.airplay
 
 import com.gios.lightremote.companion.AuthenticationException
 import com.gios.lightremote.companion.Credentials
+import com.gios.lightremote.companion.Trace
 import com.gios.lightremote.crypto.ChaChaCipherPair
 import com.gios.lightremote.crypto.Curve25519
 import com.gios.lightremote.crypto.Digest
 import com.gios.lightremote.crypto.Srp
+import com.gios.lightremote.proto.Opack
 import com.gios.lightremote.proto.Tlv8
 import java.util.UUID
 
@@ -71,6 +73,35 @@ class AirPlayPairing(private val channel: RtspChannel) {
     private fun tlv(body: ByteArray): Map<Int, ByteArray> {
         val map = Tlv8.read(body)
         Tlv8.errorMessage(map)?.let { throw AuthenticationException(it) }
+        return map
+    }
+
+    /**
+     * POST one pair-setup message and return the reply's TLV, naming the HAP step in
+     * everything that can go wrong.
+     *
+     * The v1.25 field failure was diagnosed blind because this layer said nothing: the client
+     * ignored the HTTP status line entirely, so a TV that answered a broken M5 with an error
+     * page produced an empty TLV map and the generic "no credentials returned" three layers
+     * up. Real tvOS is stricter than any fake — pyatv raises on any non-2xx here, and so does
+     * this now. The step number ("the TV's reply at step 6") is the HAP state, M1..M6, which
+     * is also the first thing a wire trace is read for.
+     */
+    private fun setupExchange(sent: Int, expect: Int, body: ByteArray): Map<Int, ByteArray> {
+        Trace.step("airplay pair-setup: M$sent ${body.size}B")
+        val response = post("/pair-setup", hkp = 3, body = body)
+        if (response.code !in 200..299) {
+            Trace.problem("airplay pair-setup: HTTP ${response.code} replying to M$sent")
+            throw AuthenticationException(
+                "the TV refused pairing step $sent (HTTP ${response.code})",
+            )
+        }
+        val map = Tlv8.read(response.body)
+        Tlv8.errorMessage(map)?.let {
+            Trace.problem("airplay pair-setup: M$expect error: $it")
+            throw AuthenticationException(it)
+        }
+        Trace.step("airplay pair-setup: M$expect ${response.body.size}B tags=${map.keys.sorted()}")
         return map
     }
 
@@ -194,16 +225,20 @@ class AirPlayPairing(private val channel: RtspChannel) {
     /** Ask the device to display an AirPlay pairing PIN. */
     fun beginPairSetup(): Setup {
         post("/pair-pin-start", hkp = 3, body = null)
-        val m1 = Tlv8.write(
-            linkedMapOf(
-                Tlv8.METHOD to byteArrayOf(0x00),
-                Tlv8.SEQ_NO to byteArrayOf(0x01),
+        val m2 = setupExchange(
+            sent = 1,
+            expect = 2,
+            body = Tlv8.write(
+                linkedMapOf(
+                    Tlv8.METHOD to byteArrayOf(0x00),
+                    Tlv8.SEQ_NO to byteArrayOf(0x01),
+                ),
             ),
         )
-        val m2 = tlv(post("/pair-setup", hkp = 3, body = m1).body)
-        val salt = m2[Tlv8.SALT] ?: throw AuthenticationException("no salt in the pairing response")
+        val salt = m2[Tlv8.SALT]
+            ?: throw AuthenticationException("the TV's reply at step 2 carried no salt")
         val serverKey = m2[Tlv8.PUBLIC_KEY]
-            ?: throw AuthenticationException("no public key in the pairing response")
+            ?: throw AuthenticationException("the TV's reply at step 2 carried no public key")
         return Setup(Curve25519.randomBytes(32), UUID.randomUUID().toString().toByteArray(), salt, serverKey)
     }
 
@@ -212,15 +247,19 @@ class AirPlayPairing(private val channel: RtspChannel) {
         val srp = Srp.Session(setup.clientPrivateKey)
         srp.process(setup.salt, setup.serverPublicKey, pin)
 
-        val m3 = Tlv8.write(
-            linkedMapOf(
-                Tlv8.SEQ_NO to byteArrayOf(0x03),
-                Tlv8.PUBLIC_KEY to srp.publicKeyBytes(),
-                Tlv8.PROOF to srp.proof,
+        val m4 = setupExchange(
+            sent = 3,
+            expect = 4,
+            body = Tlv8.write(
+                linkedMapOf(
+                    Tlv8.SEQ_NO to byteArrayOf(0x03),
+                    Tlv8.PUBLIC_KEY to srp.publicKeyBytes(),
+                    Tlv8.PROOF to srp.proof,
+                ),
             ),
         )
-        val m4 = tlv(post("/pair-setup", hkp = 3, body = m3).body)
-        val deviceProof = m4[Tlv8.PROOF] ?: throw AuthenticationException("the Apple TV sent no proof")
+        val deviceProof = m4[Tlv8.PROOF]
+            ?: throw AuthenticationException("the TV's reply at step 4 carried no proof")
         if (!Digest.constantTimeEquals(deviceProof, srp.expectedServerProof)) {
             throw AuthenticationException("the Apple TV's proof did not match — check the code")
         }
@@ -237,32 +276,57 @@ class AirPlayPairing(private val channel: RtspChannel) {
             Tlv8.SIGNATURE to signature,
         )
         if (displayName != null) {
-            payload[Tlv8.NAME] = displayName.toByteArray(Charsets.UTF_8)
+            // An OPACK dictionary, never a bare string. tvOS parses TLV 0x11 as OPACK — the
+            // same {"name": ...} dict the Companion pairing sends — and a raw UTF-8 name is
+            // malformed OPACK from its point of view. Real tvOS then withholds the credential
+            // TLV from M6 entirely (no error code, just a bare state), which is exactly the
+            // v1.25 field failure: the code on the screen was right, the SRP proof matched,
+            // and pairing still ended with nothing returned. pyatv has packed this field with
+            // opack since aa23a11 ("readable paired device names"); the raw string only ever
+            // worked against our own fake, which never looked inside.
+            payload[Tlv8.NAME] = Opack.pack(mapOf("name" to displayName))
         }
         val cipher = ChaChaCipherPair(encryptionKey, encryptionKey, nonceLength = 8)
         val encrypted = cipher.encrypt(Tlv8.write(payload), nonce = "PS-Msg05".toByteArray(Charsets.UTF_8))
 
-        val m6 = tlv(
-            post(
-                "/pair-setup",
-                hkp = 3,
-                body = Tlv8.write(
-                    linkedMapOf(
-                        Tlv8.SEQ_NO to byteArrayOf(0x05),
-                        Tlv8.ENCRYPTED_DATA to encrypted,
-                    ),
+        val m6 = setupExchange(
+            sent = 5,
+            expect = 6,
+            body = Tlv8.write(
+                linkedMapOf(
+                    Tlv8.SEQ_NO to byteArrayOf(0x05),
+                    Tlv8.ENCRYPTED_DATA to encrypted,
                 ),
-            ).body,
+            ),
         )
-        val sealed = m6[Tlv8.ENCRYPTED_DATA] ?: throw AuthenticationException("no credentials returned")
+        val sealed = m6[Tlv8.ENCRYPTED_DATA]
+            ?: throw AuthenticationException("the TV's reply at step 6 couldn't be read — it carried no credentials")
         val decrypted = try {
             cipher.decrypt(sealed, nonce = "PS-Msg06".toByteArray(Charsets.UTF_8))
         } catch (e: Exception) {
-            throw AuthenticationException("could not decrypt the pairing response — wrong code?")
+            throw AuthenticationException("the TV's reply at step 6 couldn't be decrypted — wrong code?")
         }
         val result = Tlv8.read(decrypted)
-        val deviceId = result[Tlv8.IDENTIFIER] ?: throw AuthenticationException("no device id in response")
-        val devicePublicKey = result[Tlv8.PUBLIC_KEY] ?: throw AuthenticationException("no device key in response")
+        val deviceId = result[Tlv8.IDENTIFIER]
+            ?: throw AuthenticationException("the TV's reply at step 6 carried no device id")
+        val devicePublicKey = result[Tlv8.PUBLIC_KEY]
+            ?: throw AuthenticationException("the TV's reply at step 6 carried no device key")
+
+        // tvOS signs its M6 identity with material derived from this exchange's session key.
+        // pyatv skips the check; doing it here — as a warning, exactly like the Companion
+        // path — catches a botched pairing now rather than as a mystery on the next connect,
+        // without letting a false negative block a pairing that would otherwise work.
+        val deviceSignature = result[Tlv8.SIGNATURE]
+        if (deviceSignature != null) {
+            val accessoryInfo = Digest.hkdfSha512(
+                "Pair-Setup-Accessory-Sign-Salt",
+                "Pair-Setup-Accessory-Sign-Info",
+                srp.sessionKey,
+            ) + deviceId + devicePublicKey
+            if (!Curve25519.ed25519Verify(devicePublicKey, accessoryInfo, deviceSignature)) {
+                Trace.problem("airplay pair-setup: the TV's identity signature did not verify")
+            }
+        }
         return Credentials(
             devicePublicKey = devicePublicKey,
             clientPrivateKey = signingSeed,

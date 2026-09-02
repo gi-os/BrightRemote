@@ -232,7 +232,7 @@ class DropWatch(
     }
 }
 
-/** The three ways this app can tell that the link is not working. */
+/** The ways this app can tell that something it owns is not working. */
 enum class FaultKind(val label: String, val note: String, val what: String) {
     Dropped(
         label = "drop",
@@ -248,6 +248,20 @@ enum class FaultKind(val label: String, val note: String, val what: String) {
         label = "no answer",
         note = "the Apple TV stopped answering buttons",
         what = "get an answer from the Apple TV",
+    ),
+
+    /**
+     * The interactive AirPlay PIN pairing failed for a reason that is not a mistyped code.
+     *
+     * This is the flow the v1.25 field bug lived in, and it went undiagnosed for exactly as
+     * long as it filed no report: the only account of the failure was one sentence on the
+     * phone's screen, remembered and relayed. The pairing errors now name their HAP step and
+     * the report carries the wire trace, so the next one explains itself.
+     */
+    PairFailed(
+        label = "pairing failed",
+        note = "pairing for now-playing failed partway",
+        what = "finish the AirPlay pairing that shows titles and artwork",
     ),
 }
 

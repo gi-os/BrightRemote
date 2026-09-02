@@ -9,6 +9,7 @@ import com.gios.lightremote.crypto.Digest
 import com.gios.lightremote.crypto.Srp
 import com.gios.lightremote.proto.BPlist
 import com.gios.lightremote.proto.Mrp
+import com.gios.lightremote.proto.Opack
 import com.gios.lightremote.proto.ProtoBuf
 import com.gios.lightremote.proto.Tlv8
 import java.io.ByteArrayOutputStream
@@ -54,6 +55,12 @@ import java.util.Collections
 class FakeAirPlayReceiver(
     private val pin: String = "3939",
     private val supportsTransient: Boolean = true,
+    /**
+     * Reply to a perfectly good M5 the way tvOS replied to v1.25's malformed one: a bare
+     * `{state: 6}` with neither credentials nor an error code. Exists so the client's
+     * step-labelled error surface has something honest to fail against.
+     */
+    private val withholdCredentials: Boolean = false,
 ) : Closeable {
 
     private val control = ServerSocket(0)
@@ -77,6 +84,18 @@ class FakeAirPlayReceiver(
     @Volatile
     var pairedClientId: ByteArray? = null
         private set
+
+    /**
+     * The display name each PIN pair-setup carried in M5, decoded the way tvOS decodes it.
+     *
+     * tvOS parses TLV 0x11 as an OPACK dictionary with a "name" entry. The v1.25 client sent
+     * the name as a bare UTF-8 string, this fake never looked inside, and the divergence
+     * shipped: against a real Apple TV the pairing died at M6 with no credentials. So the
+     * fake now does what the television does — a name that is not a well-formed OPACK
+     * {"name": ...} dictionary fails the exchange (see [handlePairSetup]) — and what it
+     * managed to decode lands here for the tests to assert on.
+     */
+    val pairSetupNames: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
     @Volatile
     var failure: Throwable? = null
@@ -364,8 +383,37 @@ class FakeAirPlayReceiver(
                 )
                 val cipher = ChaChaCipherPair(encryptionKey, encryptionKey, nonceLength = 8)
                 val inner = Tlv8.read(cipher.decrypt(key, nonce = "PS-Msg05".toByteArray(Charsets.UTF_8)))
-                pairedClientId = inner[Tlv8.IDENTIFIER] ?: error("M5 without identifier")
-                pairedClientLtpk = inner[Tlv8.PUBLIC_KEY] ?: error("M5 without a public key")
+                val clientId = inner[Tlv8.IDENTIFIER] ?: error("M5 without identifier")
+                val clientLtpk = inner[Tlv8.PUBLIC_KEY] ?: error("M5 without a public key")
+
+                // tvOS verifies the controller's signature over the HKDF-derived iOSDeviceX
+                // material before it stores anything; a client that signs the wrong bytes gets
+                // an authentication error, not credentials. The fake used to accept anything.
+                val clientSignature = inner[Tlv8.SIGNATURE] ?: error("M5 without a signature")
+                val iosDeviceX = Digest.hkdfSha512(
+                    "Pair-Setup-Controller-Sign-Salt", "Pair-Setup-Controller-Sign-Info", srpKey,
+                )
+                if (!Curve25519.ed25519Verify(clientLtpk, iosDeviceX + clientId + clientLtpk, clientSignature)) {
+                    return SetupOutcome(errorTlv(0x06, 0x02))
+                }
+
+                // TLV 0x11, when present, must be an OPACK dictionary carrying "name" — the
+                // encoding pyatv has always used and tvOS expects. On the malformed raw-UTF-8
+                // name the v1.25 client sent, a real Apple TV answered M6 as a bare state with
+                // neither credentials nor an error code (the observed field failure), so that
+                // is exactly what the fake does. Anything looser here and the client bug that
+                // shipped would still be invisible.
+                val rawName = inner[Tlv8.NAME]
+                if (rawName != null) {
+                    val name = runCatching { Opack.unpackMap(rawName)["name"] as? String }.getOrNull()
+                        ?: return SetupOutcome(Tlv8.write(linkedMapOf(Tlv8.SEQ_NO to byteArrayOf(0x06))))
+                    pairSetupNames.add(name)
+                }
+                if (withholdCredentials) {
+                    return SetupOutcome(Tlv8.write(linkedMapOf(Tlv8.SEQ_NO to byteArrayOf(0x06))))
+                }
+                pairedClientId = clientId
+                pairedClientLtpk = clientLtpk
 
                 val accessoryLtpk = Curve25519.ed25519PublicKey(accessorySeed)
                 val deviceX = Digest.hkdfSha512(

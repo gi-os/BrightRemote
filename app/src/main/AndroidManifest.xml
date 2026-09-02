@@ -79,5 +79,16 @@
             android:name=".backup.Backup"
             android:authorities="${applicationId}.lightsync.backup"
             android:exported="true" />
+
+        <!--
+            Viewing sessions for the LightNotebook journal bus. Exported because the journal
+            reads it from another app; read-only because it throws on every write; and safe
+            to expose because the only thing behind it is "what played on the Apple TV and
+            for how long", which the querying side is the whole point of.
+        -->
+        <provider
+            android:name=".watched.WatchedProvider"
+            android:authorities="com.gios.lightremote.watched"
+            android:exported="true" />
     </application>
 </manifest>

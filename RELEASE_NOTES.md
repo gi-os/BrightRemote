@@ -1,3 +1,49 @@
+## BrightRemote v1.26 — Typing the code now actually finishes the pairing, and the journal learns what you watched
+
+### "No credentials returned"
+
+Field report, v1.25.40: Pair for now playing puts the code on the TV, the keypad takes it,
+the SRP proof matches — and the app ends with "no credentials returned". Real tvOS was
+refusing the final step of an exchange our own fake receiver had been happily accepting.
+
+The divergence, found by diffing the client against pyatv's real implementation: the display
+name in the encrypted M5 payload (TLV 0x11, the "Light Phone" that shows under Settings >
+Remotes and Devices) must be an **OPACK dictionary** — `{"name": "Light Phone"}` — and the
+client sent it as a bare UTF-8 string. Our Companion pairing has always packed it correctly;
+the AirPlay path did not, and tvOS answers a malformed M5 with a bare state-6 TLV carrying
+neither credentials nor an error code. The code was right, the crypto was right, and the
+pairing still died at the last step, every time.
+
+Three layers of that failure are fixed:
+
+- **The client packs the name as OPACK**, byte-for-byte what pyatv has sent since its
+  `aa23a11`. It also now verifies the accessory's M6 identity signature (warning-only, like
+  the Companion path) and refuses non-2xx HTTP answers instead of reading an error page as
+  an empty TLV.
+- **The fake receiver is now as strict as the television.** It verifies the client's M5
+  signature over the HKDF-derived controller material, decodes the name TLV as OPACK, and
+  answers a malformed one exactly the way tvOS answered v1.25: a bare state with nothing in
+  it. The v1.25 client fails three tests against it; the fix passes all of them.
+- **The next field failure diagnoses itself.** Every pair-setup error now names its HAP step
+  ("The TV's reply at step 6 couldn't be read"), the exchange narrates into the wire trace,
+  and a pairing that breaks for any reason other than a mistyped code files a throttled
+  auto-report with the trace tail attached — this bug cost an evening because the only
+  record of it was one remembered sentence.
+
+### The journal learns what you watched
+
+With the tunnel actually able to pair, the now-playing stream becomes a record: BrightRemote
+now assembles viewing sessions from the same SET_STATE messages it already parses — nothing
+new is sent or subscribed — and serves them read-only to the LightNotebook journal bus at
+`content://com.gios.lightremote.watched/sessions/<yyyy-MM-dd>`.
+
+The session rules, each unit-tested over a synthetic clock: contiguous playback of one title
+is one session; a pause under five minutes stays in the session but never counts toward its
+duration; a title change or a longer gap closes it at the moment playback stopped; under two
+minutes of actual playing is channel-surfing and is dropped. Sessions persist in a small
+store capped at sixty days, written only when they close — so a crash or a dropped link can
+lose at most the sitting in progress, and can never invent a phantom hour.
+
 ## BrightRemote v1.25 — Pair for now playing
 
 ### The pairing code came up on the TV, and there was nowhere to type it

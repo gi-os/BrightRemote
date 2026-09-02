@@ -26,6 +26,7 @@ import com.gios.lightremote.media.RemoteMediaSession
 import com.gios.lightremote.service.RemoteService
 import com.gios.lightremote.report.DropWatch
 import com.gios.lightremote.report.FaultKind
+import com.gios.lightremote.watched.WatchedRecorder
 import com.gios.light.common.report.Failure
 import com.gios.light.common.report.Reports
 import com.gios.light.common.report.Symptom
@@ -162,6 +163,14 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The connect attempt in flight, so a second one cannot start beside it. */
     private var connectJob: Job? = null
+
+    /**
+     * Viewing sessions for the Notebook journal, observed off the MRP stream.
+     *
+     * Fed from the tunnel callback and closed on every teardown, so a session can only span
+     * time the link was actually up and playing.
+     */
+    private val watched = WatchedRecorder(app)
 
     /** The interactive AirPlay pairing in flight, if the user asked for one. */
     private var airPlaySetup: AirPlayPinSetup? = null
@@ -431,6 +440,9 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
                     cancelAirPlayPairing()
                     _state.value = _state.value.copy(error = error.friendlyMessage())
+                    // The user asked for this pairing, so its failure is worth a report —
+                    // unlike the silent MRP probes, which fail without a word by contract.
+                    fault(FaultKind.PairFailed, "begin: ${error::class.java.simpleName}: ${error.message}")
                 }
         }
     }
@@ -492,6 +504,11 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     } else {
                         cancelAirPlayPairing()
                         _state.value = _state.value.copy(error = error.friendlyMessage())
+                        // Not a mistyped code: the exchange itself broke. The step-labelled
+                        // message plus the wire trace in the report is the whole diagnosis
+                        // kit — this exact failure shipped in v1.25 and had to be debugged
+                        // from one remembered sentence because nothing was filed.
+                        fault(FaultKind.PairFailed, "${error::class.java.simpleName}: ${error.message}")
                     }
                 }
         }
@@ -941,6 +958,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
         idleJob?.cancel()
         airPlaySetup?.closeQuietly()
+        watched.flush()
         stopMrp()
         mediaSession.release()
         RemoteService.stop(app)
@@ -966,6 +984,9 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     private fun teardownConnectionSideEffects() {
         idleJob?.cancel()
         idleJob = null
+        // Close the open viewing session before the tunnel goes: the end of the link is the
+        // last moment we can honestly say the television was being watched.
+        watched.flush()
         stopMrp()
         mediaSession.deactivate()
         _state.value = _state.value.copy(mrpNowPlaying = null, mrpPairable = false)
@@ -987,6 +1008,11 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(mrpPairable = false)
         val tunnel = MrpTunnel(host = host, deviceId = prefs.identity.deviceId, scope = viewModelScope)
         tunnel.onNowPlaying = { np ->
+            // On the data-reader thread, deliberately: the recorder is synchronized and cheap,
+            // and going through the main dispatcher would let snapshots coalesce — a pause
+            // that was overwritten by the next play before the coroutine ran would vanish
+            // from the viewing record.
+            watched.onNowPlaying(np)
             viewModelScope.launch {
                 _state.value = _state.value.copy(mrpNowPlaying = np)
                 updateMediaSession()
