@@ -5,6 +5,8 @@ import com.gios.lightremote.proto.Mrp
 import com.gios.lightremote.proto.MrpAccumulator
 import com.gios.lightremote.proto.MrpNowPlaying
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * The MRP-over-AirPlay tunnel: connect, subscribe, and turn the stream of protobufs into a
@@ -53,10 +55,15 @@ class MrpTunnel(
         s.connect(auth)
 
         // First DEVICE_INFO, then the connection state, then the update subscription — the
-        // order tvOS expects on a fresh data channel.
-        s.sendProtobuf(Mrp.deviceInfo(name = "Light Phone", identifier = deviceId))
-        s.sendProtobuf(Mrp.setConnectionState())
-        s.sendProtobuf(Mrp.clientUpdatesConfig())
+        // order tvOS expects on a fresh data channel. These writes go out on the IO dispatcher
+        // explicitly: connect() is launched from the view model's main-thread scope, and a
+        // socket write on the main thread throws NetworkOnMainThreadException, which
+        // sendProtobuf swallows — leaving the subscription silently never sent.
+        withContext(Dispatchers.IO) {
+            s.sendProtobuf(Mrp.deviceInfo(name = "Light Phone", identifier = deviceId))
+            s.sendProtobuf(Mrp.setConnectionState())
+            s.sendProtobuf(Mrp.clientUpdatesConfig())
+        }
         Trace.step("mrp: subscribed to now-playing")
     }
 

@@ -1,3 +1,35 @@
+## BrightRemote v1.27 — The now-playing subscription is sent on a background thread, so it actually goes out
+
+### The trace said "subscribed", but nothing ever arrived
+
+Field report, v1.26.41, on the remote screen: the Apple TV dropped the connection and the app
+picked it back up in 0.3s. The wire trace that rode along told a second, quieter story. Right
+after `data channel up`, three lines in a row:
+
+```
+!! airplay: failed to send an MRP message (NetworkOnMainThreadException: null)
+```
+
+Those three are the messages that open the now-playing subscription — DEVICE_INFO, the
+connection state, and the client-updates config. The trace then prints `mrp: subscribed to
+now-playing` anyway, because that line is written unconditionally after the three sends. The
+app said it subscribed, and the Apple TV never heard a word.
+
+The cause is a thread, not a protocol bug. `MrpTunnel.connect()` is a suspend function launched
+from the view model's main-thread scope, and `sendProtobuf()` writes to the data socket
+directly. A socket write on the main thread throws `NetworkOnMainThreadException`, and
+`sendProtobuf()` deliberately catches everything (best-effort metadata, never disturb the
+remote) — so the failure was logged and dropped, and the subscription was silently never sent.
+Nothing in the protocol was wrong; the three messages simply never left the phone.
+
+The fix puts the three subscription writes on the IO dispatcher inside `connect()`, the same
+place the socket itself is stood up. The subscription now actually reaches the Apple TV, and
+the now-playing title, artist and artwork that depend on it come back after a drop instead of
+going quiet.
+
+Fixes [light-reports#281] — the Apple TV dropped the connection, and the now-playing
+subscription that should have re-established was sent on the main thread and never arrived.
+
 ## BrightRemote v1.26 — Typing the code now actually finishes the pairing, and the journal learns what you watched
 
 ### "No credentials returned"
