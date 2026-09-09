@@ -15,6 +15,14 @@
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
 
+# A shake-to-report drop names the exception that caused it, and it names it with
+# `cause::class.java.simpleName`. Platform types survive that — `SocketException` reads as itself —
+# but this app's own throwables are renamed to a single letter, so every report of a clean
+# disconnect arrived headed `a: connection closed by the Apple TV` and every failed tunnel
+# `a: transient pairing: no salt`. Seventeen reports whose one grouping key was the letter a.
+# Names only: the classes are still shrunk and their members still renamed.
+-keepnames class com.gios.lightremote.** extends java.lang.Throwable
+
 # ---------------------------------------------------------------- LightSync
 
 # The provider is named as a string in AndroidManifest.xml, so no code refers to it. aapt2

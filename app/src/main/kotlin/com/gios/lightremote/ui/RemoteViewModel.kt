@@ -23,6 +23,7 @@ import com.gios.lightremote.airplay.AirPlayAuth
 import com.gios.lightremote.airplay.AirPlayPinSetup
 import com.gios.lightremote.airplay.MrpTunnel
 import com.gios.lightremote.media.RemoteMediaSession
+import com.gios.lightremote.net.NetworkWatch
 import com.gios.lightremote.service.RemoteService
 import com.gios.lightremote.report.DropWatch
 import com.gios.lightremote.report.FaultKind
@@ -48,6 +49,15 @@ private const val RETRY_DELAY_MS = 1_200L
 
 /** Automatic reconnects after a link drops on its own, before Retry becomes manual. */
 private const val LOST_RECONNECTS = 2
+
+/**
+ * The least time between two reconnects triggered by the network coming back.
+ *
+ * Wi-Fi that is flapping produces an edge every time it settles, and each edge would otherwise buy
+ * a full ladder of attempts. Half a minute is longer than any flap and shorter than the patience of
+ * somebody holding a remote that has stopped working.
+ */
+private const val NETWORK_RETRY_FLOOR_MS = 30_000L
 
 /**
  * Where the Companion service listens when nothing has told us otherwise.
@@ -130,6 +140,23 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      * degrades to "no metadata" without touching the remote.
      */
     private var mrpTunnel: MrpTunnel? = null
+
+    /**
+     * One reconnect when the phone gets a network back.
+     *
+     * The bounded ladder in [connect] answers a television tearing down its own session, which is
+     * the drop it was written for. It cannot answer the other one: light-reports#253 spent all
+     * three attempts inside four seconds against a radio that was down (`ENETUNREACH`), and then
+     * the app sat disconnected with the user still holding it and the remote screen still open —
+     * [onForeground] never fires, because they never left.
+     *
+     * So the network coming back is treated as the one event worth another attempt. See
+     * [NetworkWatch] for why this is an edge and deliberately not a longer ladder.
+     */
+    private val networkWatch by lazy { NetworkWatch(app) { onNetworkBack() } }
+
+    /** When the network last bought a reconnect, against [NETWORK_RETRY_FLOOR_MS]. */
+    private var lastNetworkRetryAt = 0L
 
     /**
      * The media session, so BrightControl's lock face grows a transport row over this remote.
@@ -725,7 +752,33 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      * Only from Disconnected, so this cannot interfere with an attempt already under way, and
      * only when a television is remembered.
      */
+    /**
+     * The phone has a network again, so the reason the last attempts failed may have stopped being
+     * true. Worth exactly one more go.
+     *
+     * Guarded the same way [onForeground] is — disconnected, a television to go back to, nothing
+     * already in flight — plus a floor, so Wi-Fi that flaps cannot turn one edge into a stream of
+     * attempts. Not gated on being in the foreground: the media session keeps this remote on
+     * BrightControl's lock face while the app is away, and a link that dropped in a pocket is worth
+     * picking back up for the same reason it was worth holding.
+     */
+    private fun onNetworkBack() {
+        if (_state.value.connection != ConnectionState.Disconnected) return
+        if (connectJob?.isActive == true) return
+        val id = activeDeviceId ?: return
+        val device = prefs.devices().firstOrNull { it.id == id } ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastNetworkRetryAt < NETWORK_RETRY_FLOOR_MS) return
+        lastNetworkRetryAt = now
+        Trace.step("network back — reconnecting to ${device.name}")
+        // A fresh budget: the attempts that ran out did so against a network that was not there,
+        // which is not evidence about this television.
+        lostReconnects = 0
+        connect(device)
+    }
+
     fun onForeground() {
+        networkWatch.start()
         if (_state.value.connection != ConnectionState.Disconnected) return
         if (connectJob?.isActive == true) return
         // No "or the first one paired" fallback here, unlike [reconnect]. Forgetting the active
@@ -956,6 +1009,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
+        networkWatch.stop()
         idleJob?.cancel()
         airPlaySetup?.closeQuietly()
         watched.flush()
