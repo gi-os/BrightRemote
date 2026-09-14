@@ -22,6 +22,11 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          # The 'tools' package (the pre-cmdline-tools SDK) was dropped from the SDK index and
+          # `sdkmanager tools` now exits 1, failing the step before any build runs. Install only
+          # what the build needs; platforms/build-tools come from the runner image and AGP.
+          packages: 'platform-tools'
       - uses: gradle/actions/setup-gradle@v4
 
       # versionCode is the workflow run number, so every push produces a newer build and
