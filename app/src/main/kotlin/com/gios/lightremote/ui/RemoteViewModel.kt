@@ -159,6 +159,16 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     private var lastNetworkRetryAt = 0L
 
     /**
+     * Whether the activity is on screen. The foreground service may only be started from the
+     * foreground, so a connection that comes up while the app is backgrounded — the
+     * network-back reconnect in [onNetworkBack] — must defer its service until the next resume.
+     */
+    private var inForeground = false
+
+    /** Set when a background connect succeeded but the foreground service could not start yet. */
+    private var serviceStartDeferred = false
+
+    /**
      * The media session, so BrightControl's lock face grows a transport row over this remote.
      * Created lazily and kept for the life of the view model; activated only while connected and
      * something is playing (see [updateMediaSession]).
@@ -560,6 +570,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      * The Companion session is deliberately untouched; it has its own resume path.
      */
     fun onBackground() {
+        inForeground = false
         if (airPlaySetup != null) cancelAirPlayPairing()
     }
 
@@ -778,7 +789,16 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onForeground() {
+        inForeground = true
         networkWatch.start()
+        // A connect that came up while the app was backgrounded deferred its foreground service
+        // (it cannot be started from the background). Bring it up now that we are on screen.
+        if (serviceStartDeferred && _state.value.connection == ConnectionState.Connected) {
+            serviceStartDeferred = false
+            activeDeviceId?.let { id ->
+                prefs.devices().firstOrNull { it.id == id }?.let { RemoteService.start(app, it.name) }
+            }
+        }
         if (_state.value.connection != ConnectionState.Disconnected) return
         if (connectJob?.isActive == true) return
         // No "or the first one paired" fallback here, unlike [reconnect]. Forgetting the active
@@ -1028,7 +1048,17 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun onConnected(device: PairedDevice, host: String) {
         activeHost = host
-        RemoteService.start(app, device.name)
+        // A foreground service may only be started while the app is in the foreground. The
+        // network-back reconnect (onNetworkBack) can bring a connection up while the phone is in
+        // a pocket, and starting the service there throws ForegroundServiceStartNotAllowedException
+        // and kills the app. Defer it: the socket and media session live in this process, and the
+        // service is what keeps that process alive once it runs, so it starts on the next resume.
+        if (inForeground) {
+            RemoteService.start(app, device.name)
+            serviceStartDeferred = false
+        } else {
+            serviceStartDeferred = true
+        }
         resetIdleTimer()
         startMrp(device, host)
         updateMediaSession()
@@ -1038,6 +1068,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     private fun teardownConnectionSideEffects() {
         idleJob?.cancel()
         idleJob = null
+        serviceStartDeferred = false
         // Close the open viewing session before the tunnel goes: the end of the link is the
         // last moment we can honestly say the television was being watched.
         watched.flush()

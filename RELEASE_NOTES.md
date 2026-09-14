@@ -1,45 +1,18 @@
-## BrightRemote v1.28 — a drop that outlives the Wi-Fi is picked back up, and reports say which exception
+## BrightRemote v1.29 — a reconnect that happens in your pocket no longer crashes the app
 
-**A dropped link gets three connect attempts inside four seconds, and then the app waits for you to
-notice.** That ladder was written for one failure and it is right about it: a television tearing
-down its own session refuses the next pair-verify for a moment, so one failure proves nothing and
-1.2 seconds later it usually works. It is wrong about the other failure, and
-[light-reports#253] is the other failure written out in full — the drop, then
-`ConnectException: ... ENETUNREACH (Network is unreachable)`. The phone had no network at all. All
-three attempts were spent in four seconds against a radio that was down, and the app then sat
-disconnected with the remote screen open and the user still pressing buttons.
+**A link that came back while the phone was in a pocket killed the app.** The network-back
+reconnect added in v1.28 fires while the app is backgrounded — that is the whole point of it: the
+Wi-Fi returns and the remote picks its television back up without you having to open the app. But
+the moment that reconnect succeeded it started the foreground service that keeps the process alive,
+and Android does not allow a backgrounded app to start a foreground service. The result was
+`ForegroundServiceStartNotAllowedException` on the main thread, which takes the whole process down
+— a remote that "closed itself" while the phone was sitting idle on the home screen.
 
-Returning to the app already triggers a reconnect. That is no help here, because nobody left.
+**The service now waits until the app is back on screen.** The connection itself still comes up in
+the background — the socket, the media session and the now-playing tunnel all live in the process
+and need no service to exist. What needs the service is *survival*, and the service only does its
+job once it is running, so it is brought up on the next resume instead of being attempted from the
+background and throwing. A connect that happens while the app is actually open starts the service
+immediately, exactly as before; only the background path defers.
 
-**The network coming back is now worth one more attempt.** A default-network watcher reports the
-edge — no network to some network — and on that edge the app tries again once, with a fresh budget,
-because attempts spent against a missing radio are not evidence about the television.
-
-The obvious repair was a longer ladder, and it is the wrong one. An earlier build retried on every
-state change and ground away at a television that was simply switched off, which is why the attempts
-are counted and bounded at all. A timer cannot tell a set that is off from a network that is down;
-an edge can. A television that is off produces no edge and costs nothing, which is the property the
-bounded ladder was there to protect. There is a thirty-second floor between two network-triggered
-attempts, so Wi-Fi that flaps cannot turn one edge into a stream of them.
-
-Availability is the test, not validation. `NET_CAPABILITY_VALIDATED` and `NET_CAPABILITY_INTERNET`
-both mean the internet is reachable, and the Apple TV is on the far side of the room rather than the
-far side of the internet. Waiting for validation would mean not reconnecting on exactly the networks
-where the remote still works.
-
-**And every report of a drop now names the exception it was.** A shake-to-report drop is headed with
-`cause::class.java.simpleName`. Platform types survive minifying and read as themselves; this app's
-own throwables were renamed to one letter, so every clean disconnect arrived headed `a: connection
-closed by the Apple TV` and every failed metadata tunnel `a: transient pairing: no salt`. Seventeen
-open reports whose only grouping key was the letter a. A `-keepnames` rule for this app's throwables
-fixes it, names only — the classes are still shrunk and their members still renamed.
-
-Addresses [light-reports#253], [#268], [#246], [#225] and [#224] — a drop the reconnect ladder
-could not outlive.
-
-Already fixed in v1.27, before these were read: [light-reports#226], the three
-`NetworkOnMainThreadException` lines that silently swallowed the now-playing subscription.
-
-Still open and needing the television: the metadata tunnel refusing with
-`transient pairing: no salt` ([light-reports#268], [#263]) wants the AirPlay pairing UI, which is
-its own piece of work.
+Fixes [light-reports#403] — the app closed itself on the home screen after the Wi-Fi came back.
