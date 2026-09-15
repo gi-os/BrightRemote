@@ -2,6 +2,8 @@
 
 # BrightRemote
 
+[**⬇ Download the latest APK**](https://github.com/gi-os/BrightRemote/releases/latest) · free, open source.
+
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
 released version: **v1.29.x**.
 
