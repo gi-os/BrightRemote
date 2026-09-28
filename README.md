@@ -393,7 +393,7 @@ so consecutive tags can share a `major.minor` across several unrelated changes.
 | Version | Change |
 | --- | --- |
 | *(pending)* | A TV hangup that heals itself no longer files a report: a drop the television closes on its own and recovers inside the settle window is counted, not filed (source bumped to `1.30.0`) |
-| v1.29.45 | A reconnect that succeeds while the app is backgrounded defers its foreground service to the next resume instead of crashing with `ForegroundServiceStartNotAllowedException` |
+| v1.29.44 | A reconnect that succeeds while the app is backgrounded defers its foreground service to the next resume instead of crashing with `ForegroundServiceStartNotAllowedException` |
 | v1.28.43 | Reconnect once when the network comes back, and keep this app's exception names out of the minifier so reports say what failed |
 | *(pending)* | Send the now-playing subscription on the IO dispatcher so it actually reaches the TV (source bumped to `1.27.0`) |
 | *(pending)* | Skip ±15s on the D-pad face, either side of Down (source bumped to `1.22.0`) |
