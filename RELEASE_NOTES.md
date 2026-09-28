@@ -1,18 +1,7 @@
-## BrightRemote v1.29 — a reconnect that happens in your pocket no longer crashes the app
+## BrightRemote v1.30: a TV hangup that heals itself no longer files a report
 
-**A link that came back while the phone was in a pocket killed the app.** The network-back
-reconnect added in v1.28 fires while the app is backgrounded — that is the whole point of it: the
-Wi-Fi returns and the remote picks its television back up without you having to open the app. But
-the moment that reconnect succeeded it started the foreground service that keeps the process alive,
-and Android does not allow a backgrounded app to start a foreground service. The result was
-`ForegroundServiceStartNotAllowedException` on the main thread, which takes the whole process down
-— a remote that "closed itself" while the phone was sitting idle on the home screen.
+**tvOS hangs up idle connections unprompted, and the app already picks them back up.** light-reports#541 and #546 are both this shape: the television closed the connection itself after a healthy session and the app reconnected in 7.9 and 0.3 seconds. There was no app fault in either, and the reports carried nothing actionable.
 
-**The service now waits until the app is back on screen.** The connection itself still comes up in
-the background — the socket, the media session and the now-playing tunnel all live in the process
-and need no service to exist. What needs the service is *survival*, and the service only does its
-job once it is running, so it is brought up on the next resume instead of being attempted from the
-background and throwing. A connect that happens while the app is actually open starts the service
-immediately, exactly as before; only the background path defers.
+**Self-filed reports now stay quiet for a clean tvOS hangup.** When the drop is the television closing the connection itself and the link is back inside the settle window, the episode is counted against its signature instead of filed. The count rides into the next report that does go out, so a real pattern is never silently lost. Drops that stay down, recover slowly, have another cause, or arrive with unanswered presses still file exactly as before.
 
-Fixes [light-reports#403] — the app closed itself on the home screen after the Wi-Fi came back.
+Fixes [light-reports#541], [light-reports#546]: the Apple TV dropped the connection and the app recovered on its own.
