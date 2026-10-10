@@ -151,7 +151,22 @@ class CompanionClient(
 
     /** Fired whenever [mediaControlFlags], [powerState], [volume] or [nowPlaying] changes. */
     var onStateChanged: (() -> Unit)? = null
+
+    /** The remote's own session ended: null for a close the app asked for, the cause otherwise. */
     var onDisconnected: ((Throwable?) -> Unit)? = null
+
+    /**
+     * A pair-setup socket ended without the app asking, typically with the code still on the
+     * television's screen.
+     *
+     * Kept apart from [onDisconnected] on purpose. Both used to arrive there, so a television
+     * abandoning a pairing was handled as the remote losing its connection: a "Lost the connection"
+     * banner on the Pair screen, a report headed "the Apple TV dropped the connection"
+     * (light-reports#676, #657, #631 and #590 are all pairings), an automatic reconnect to whatever
+     * television had been connected before — which closes the pairing socket — and a keypad left
+     * wired to a dead socket. A pairing that loses its socket is the pairing's business.
+     */
+    var onPairingDropped: ((Throwable) -> Unit)? = null
 
     val isConnected: Boolean get() = connection?.isConnected == true
 
@@ -162,10 +177,10 @@ class CompanionClient(
      * handle is passed back to [finishPairing]; the connection stays open in between.
      */
     suspend fun startPairing(host: String, port: Int): CompanionAuth.PairSetup {
-        openConnection(host, port)
-        val auth = CompanionAuth(session!!)
+        val sess = openConnection(host, port, Purpose.Pairing)
+        val auth = CompanionAuth(sess)
         pendingAuth = auth
-        return auth.beginPairSetup()
+        return auth.beginPairSetup(timeoutMs = PairStart.START_TIMEOUT_MS)
     }
 
     private var pendingAuth: CompanionAuth? = null
@@ -189,30 +204,61 @@ class CompanionClient(
      */
     private var generation: Int = 0
 
-    private suspend fun openConnection(host: String, port: Int) {
+    /** What a socket is for, which decides who hears about it ending. See [onPairingDropped]. */
+    private enum class Purpose { Session, Pairing }
+
+    /**
+     * Open a socket and start its reader. Returns the session for the caller to use directly:
+     * read back through [session] it can already be null, because a television that hangs up the
+     * instant the socket opens runs the teardown before the caller's next line.
+     */
+    private suspend fun openConnection(host: String, port: Int, purpose: Purpose): CompanionSession {
         disconnect()
         val myGeneration = ++generation
         Trace.step("connecting to $host:$port (gen $myGeneration)")
         val conn = CompanionConnection(host, port)
-        withContext(Dispatchers.IO) { conn.connect() }
+        try {
+            withContext(Dispatchers.IO) { conn.connect() }
+        } catch (t: Throwable) {
+            // Including cancellation. A tap or a network edge can cancel an attempt while its
+            // TCP connect is still blocking on the IO thread; the connect then completes into a
+            // coroutine that is no longer listening, and without this the socket stays open to
+            // the television with nothing reading it.
+            conn.close()
+            throw t
+        }
         val sess = CompanionSession(conn)
         sess.onEvent = ::handleEvent
-        sess.onDisconnect = { cause ->
-            if (myGeneration == generation) {
-                connection = null
-                session = null
-                powerState = PowerState.Unknown
-                mediaControlFlags = MediaControlFlags.None
-                nowPlaying = null
-                onStateChanged?.invoke()
-                onDisconnected?.invoke(cause)
-            } else {
-                Trace.step("ignoring teardown from stale connection $myGeneration")
-            }
-        }
-        sess.startReader(scope)
+        sess.onDisconnect = { cause -> onTeardown(conn, myGeneration, purpose, cause) }
+        // Published before the reader starts, so a teardown that runs at once clears them rather
+        // than being overwritten by them a moment later.
         connection = conn
         session = sess
+        sess.startReader(scope)
+        return sess
+    }
+
+    /** A socket's reader has finished, on the reader's thread. */
+    private fun onTeardown(conn: CompanionConnection, myGeneration: Int, purpose: Purpose, cause: Throwable?) {
+        // Dead either way, current or stale, so let go of the descriptor now. It also makes
+        // anything still holding this session fail at once with "not connected" instead of
+        // writing into a socket nobody reads and waiting out a timeout.
+        conn.close()
+        if (myGeneration != generation) {
+            Trace.step("ignoring teardown from stale connection $myGeneration")
+            return
+        }
+        connection = null
+        session = null
+        if (purpose == Purpose.Pairing) {
+            if (cause != null) onPairingDropped?.invoke(cause)
+            return
+        }
+        powerState = PowerState.Unknown
+        mediaControlFlags = MediaControlFlags.None
+        nowPlaying = null
+        onStateChanged?.invoke()
+        onDisconnected?.invoke(cause)
     }
 
     /**
@@ -221,9 +267,8 @@ class CompanionClient(
     val connectWarnings = mutableListOf<String>()
 
     suspend fun connect(host: String, port: Int, credentials: Credentials) {
-        openConnection(host, port)
+        val sess = openConnection(host, port, Purpose.Session)
         connectWarnings.clear()
-        val sess = session!!
 
         // Pair-verify and the session are the two things that genuinely have to work: one
         // brings up encryption, the other makes button presses take effect. Everything after

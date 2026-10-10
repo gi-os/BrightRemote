@@ -5,7 +5,7 @@
 [**⬇ Download the latest APK**](https://github.com/gi-os/BrightRemote/releases/latest) · free, open source.
 
 Apple TV remote for the **Light Phone III**. Launcher label: **Apple TV**. Current
-released version: **v1.30.x**.
+released version: **v1.31.x**.
 
 ## Install via BrightMarket
 
@@ -50,7 +50,9 @@ on, no crypto library pulled in either (see [Protocol layer](#protocol-layer)).
    the remote next time.
 
 Pairing must be enabled on the TV (Settings > AirPlay and HomeKit); a device with it off
-is listed but not tappable.
+is listed but not tappable, and says so. HomePods, Macs and iPads answer the same search and
+are listed the same way: they cannot show a code. If the TV hangs up before showing a code,
+or takes the code away before you type it, the app asks once more on its own.
 
 ## What it does
 
@@ -120,13 +122,23 @@ link that drops on its own is picked back up automatically twice more, and comin
 reconnects if it is not connected: the socket cannot survive the phone sleeping and a frozen
 process has no moment at which to notice, but returning to the app is a moment.
 
+**Wi-Fi coming back is the other moment.** Most drops on this phone are the phone's own network
+closing the socket while it sleeps (`Software caused connection abort`), and the reconnect then
+runs while Wi-Fi is still away — failing at once, or timing out against a TV it is trying to reach
+over cellular. So the app watches the default network, and Wi-Fi or Ethernet taking over — from
+nothing, or from cellular — buys one more ladder. If a ladder is already running when that
+happens, it starts again on Wi-Fi rather than being left to finish failing. Cellular coming up
+buys nothing: it cannot reach a TV on the LAN. There is a thirty-second floor between two of
+these, so Wi-Fi that flaps cannot turn into a stream of attempts.
+
 **A tap outranks an attempt in flight.** Both Retry and tapping a device row cancel whatever is
 running first. Without that, a connect grinding through three TCP timeouts made tapping your
 Apple TV do nothing at all for twenty seconds — leaving Forget-and-pair-again as the only button
 that still worked, which is why the symptom reported was "it always re-pairs" rather than "it
 fails to reconnect". Automatic attempts still defer to each other, so a dropped link cannot stack
-sockets, and tapping the TV you are already connected to keeps that connection rather than
-rebuilding it.
+sockets, and asking for the TV you are already connected to keeps that connection rather than
+rebuilding it — a tap on its row, and also the activity being created again around a live
+connection, which used to redial a perfectly healthy link.
 
 **Frames are sealed inside the write lock, not before it.** The output cipher is a counter and
 the device opens frames strictly in order, so sealing outside the lock let two overlapping
@@ -392,7 +404,8 @@ so consecutive tags can share a `major.minor` across several unrelated changes.
 
 | Version | Change |
 | --- | --- |
-| *(pending)* | A TV hangup that heals itself no longer files a report: a drop the television closes on its own and recovers inside the settle window is counted, not filed (source bumped to `1.30.0`) |
+| *(pending)* | Wi-Fi coming back reconnects the remote even when cellular had taken over or a reconnect was already running, a working link is no longer redialled when the activity is created again, and pairing asks once more when the TV hangs up before or after showing its code (source bumped to `1.31.0`) |
+| v1.30.49 | A TV hangup that heals itself no longer files a report: a drop the television closes on its own and recovers inside the settle window is counted, not filed |
 | v1.29.44 | A reconnect that succeeds while the app is backgrounded defers its foreground service to the next resume instead of crashing with `ForegroundServiceStartNotAllowedException` |
 | v1.28.43 | Reconnect once when the network comes back, and keep this app's exception names out of the minifier so reports say what failed |
 | *(pending)* | Send the now-playing subscription on the IO dispatcher so it actually reaches the TV (source bumped to `1.27.0`) |

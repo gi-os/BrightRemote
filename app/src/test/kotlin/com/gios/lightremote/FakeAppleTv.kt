@@ -29,7 +29,28 @@ class FakeAppleTv(
     private val pin: String = "1234",
     /** Set to make the device reject pairing with a HAP authentication error. */
     private val rejectProof: Boolean = false,
+    /**
+     * How many pair-setup M1 frames to answer by closing the socket without a reply — what
+     * light-reports#676 shows a real television doing.
+     */
+    hangUpsOnSetupStart: Int = 0,
+    /**
+     * Close the socket straight after sending M2, with the code notionally on screen — the
+     * television abandoning a pairing nobody finished (light-reports#631, #657).
+     */
+    private val hangUpAfterCode: Boolean = false,
 ) : Closeable {
+
+    @Volatile
+    private var setupStartHangUps = hangUpsOnSetupStart
+
+    /** Connections accepted so far; a retried pair-setup is a second one. */
+    @Volatile
+    var connections = 0
+        private set
+
+    /** Set by [handle] when the reply it returns should be the last thing on this socket. */
+    private var closeAfterReply = false
 
     private val server = ServerSocket(0)
     val port: Int get() = server.localPort
@@ -104,6 +125,7 @@ class FakeAppleTv(
     private fun serve() {
         while (!server.isClosed) {
             val client = runCatching { server.accept() }.getOrNull() ?: return
+            connections++
             socket = client
             cipher = null
             pendingCipher = null
@@ -141,6 +163,12 @@ class FakeAppleTv(
 
             val type = header[0].toInt() and 0xFF
             val message = Opack.unpackMap(payload)
+            if (type == 3 && setupStartHangUps > 0) {
+                synchronized(authFrames) { authFrames.add(message) }
+                setupStartHangUps--
+                client.close()
+                return
+            }
             val reply = handle(type, message) ?: continue
 
             val (replyType, replyBody) = reply
@@ -160,6 +188,11 @@ class FakeAppleTv(
             output.write(outHeader)
             output.write(body)
             output.flush()
+            if (closeAfterReply) {
+                closeAfterReply = false
+                client.close()
+                return
+            }
 
             // Encryption starts on the frame *after* the verify confirmation, never on the
             // confirmation itself.
@@ -176,7 +209,10 @@ class FakeAppleTv(
     private fun handle(type: Int, message: Map<String, Any?>): Pair<Int, Map<String, Any?>>? {
         if (type in 3..6) synchronized(authFrames) { authFrames.add(message) }
         return when (type) {
-            3 -> 4 to pairSetupStart()
+            3 -> {
+                if (hangUpAfterCode) closeAfterReply = true
+                4 to pairSetupStart()
+            }
             4 -> 4 to pairSetupNext(tlvOf(message))
             5 -> 6 to pairVerifyStart(tlvOf(message))
             6 -> 6 to pairVerifyNext(tlvOf(message))

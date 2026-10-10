@@ -3,15 +3,17 @@ package com.gios.lightremote.net
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 
 /**
- * Tells the caller when the phone gets a default network back, and nothing else.
+ * Tells the caller when the phone gets a network back that can reach the television, and nothing
+ * else.
  *
  * ## Why an edge and not a timer
  *
- * A dropped Companion link is answered by three connect attempts 1.2 seconds apart and then left
- * to the user. That ladder is right for the failure it was written for — a television tearing down
- * its own session refuses pair-verify for a moment — and wrong for the other one. light-reports#253
+ * A dropped Companion link is answered by three connect attempts 1.2 and 2.4 seconds apart and then
+ * left to the user. That ladder is right for the failure it was written for — a television tearing
+ * down its own session refuses pair-verify for a moment — and wrong for the other one. light-reports#253
  * is the wrong one written out in full: the drop, then
  * `ConnectException: ... ENETUNREACH (Network is unreachable)`. The phone had no network at all, so
  * all three attempts were spent inside four seconds against a radio that was down, and the app then
@@ -25,14 +27,21 @@ import android.net.Network
  * the only moment worth spending another attempt on. A television that is off produces no edge and
  * therefore costs nothing, which is exactly the property the bounded ladder was protecting.
  *
+ * ## Which changes count
+ *
+ * Not only "nothing, then something". Losing Wi-Fi usually hands the default to cellular rather
+ * than to nothing, and Wi-Fi coming back then *replaces* cellular — which the first version of this
+ * watcher did not count, so the reconnect it existed for never happened. [NetworkEdge] holds the
+ * rule and the reports behind it; this class only feeds it.
+ *
  * ## Availability, not validation
  *
  * `NET_CAPABILITY_VALIDATED` and `NET_CAPABILITY_INTERNET` both mean *the internet is reachable*,
  * and neither is what this needs. The Apple TV is on the far side of the room, not the far side of
  * the internet — a Wi-Fi network with no route out, or one still behind a captive portal, reaches it
  * perfectly well. Waiting for validation would mean not reconnecting on exactly the networks where
- * the remote still works. So this reports plain availability and lets the connect attempt be the
- * thing that finds out.
+ * the remote still works. So this reports the transport and lets the connect attempt be the thing
+ * that finds out.
  */
 class NetworkWatch(context: Context, private val onBack: () -> Unit) {
 
@@ -40,33 +49,43 @@ class NetworkWatch(context: Context, private val onBack: () -> Unit) {
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
     /**
-     * Whether a default network is up, as far as this has been told.
+     * The default network as this has last been told, or null for none.
      *
      * Seeded at [start] from what is already there, because `registerDefaultNetworkCallback`
-     * delivers `onAvailable` for the current network the moment it is registered. Without the seed
-     * every start of the app would look like a network that had just come back and would fire a
-     * reconnect on top of the one the resume already does.
+     * delivers the current network the moment it is registered. Without the seed every start of
+     * the app would look like a network that had just come back and would fire a reconnect on top
+     * of the one the resume already does.
      */
-    private var up = false
+    @Volatile
+    private var current: DefaultNetwork? = null
 
     private var callback: ConnectivityManager.NetworkCallback? = null
 
     fun start() {
         val cm = manager ?: return
         if (callback != null) return
-        up = runCatching { cm.activeNetwork != null }.getOrDefault(false)
+        current = runCatching {
+            cm.activeNetwork?.let { network ->
+                // Unknown capabilities are seeded as reachable: a seed that is wrong in that
+                // direction costs nothing, while one wrong the other way would fire on the very
+                // first callback, which is just the current network being announced.
+                val caps = cm.getNetworkCapabilities(network)
+                DefaultNetwork(network.networkHandle, caps?.let { reachesLan(it) } ?: true)
+            }
+        }.getOrNull()
         val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                // The edge, and only the edge. onAvailable also arrives for a second network
-                // joining beside the first one, which is not a network coming back.
-                if (!up) {
-                    up = true
-                    onBack()
-                }
+            // Not onAvailable: the transport is what decides, and for a default-network callback
+            // onAvailable is always followed straight away by this, with the capabilities in hand.
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                val after = DefaultNetwork(network.networkHandle, reachesLan(caps))
+                val edge = NetworkEdge.isEdge(current, after)
+                current = after
+                if (edge) onBack()
             }
 
+            // A default-network callback only hears onLost when nothing replaced the network.
             override fun onLost(network: Network) {
-                up = false
+                if (current?.handle == network.networkHandle) current = null
             }
         }
         runCatching { cm.registerDefaultNetworkCallback(cb) }
@@ -78,4 +97,8 @@ class NetworkWatch(context: Context, private val onBack: () -> Unit) {
         callback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
         callback = null
     }
+
+    private fun reachesLan(caps: NetworkCapabilities): Boolean =
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
 }

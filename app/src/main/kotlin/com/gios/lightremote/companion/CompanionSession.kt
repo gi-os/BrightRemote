@@ -26,6 +26,17 @@ class ProtocolException(message: String) : Exception(message)
  */
 class CompanionSession(private val connection: CompanionConnection) {
 
+    companion object {
+        /**
+         * What a clean end of stream the app did not ask for is called. DropWatch's quiet rule and
+         * [PairStart] both read it, so it is spelled once.
+         */
+        const val CLOSED_BY_TV = "connection closed by the Apple TV"
+
+        /** Start of every timeout's message; the rest names the frame that went unanswered. */
+        const val NO_ANSWER = "no answer to "
+    }
+
     private val pendingByXid = ConcurrentHashMap<Long, CompletableDeferred<Map<String, Any?>>>()
     private val pendingByFrame = ConcurrentHashMap<FrameType, CompletableDeferred<Map<String, Any?>>>()
     private var nextXid: Long = Random.nextLong(0, 1L shl 16)
@@ -38,6 +49,7 @@ class CompanionSession(private val connection: CompanionConnection) {
     var onDisconnect: ((Throwable?) -> Unit)? = null
 
     fun startReader(scope: CoroutineScope) {
+        val openedAt = System.nanoTime()
         readerJob = scope.launch(Dispatchers.IO) {
             var failure: Throwable? = null
             try {
@@ -49,7 +61,7 @@ class CompanionSession(private val connection: CompanionConnection) {
                 failure = t
             } finally {
                 // Never leave a caller suspended on a socket that has gone away.
-                val error = failure ?: ProtocolException("connection closed by the Apple TV")
+                val error = failure ?: ProtocolException(CLOSED_BY_TV)
                 pendingByXid.values.forEach { it.completeExceptionally(error) }
                 pendingByFrame.values.forEach { it.completeExceptionally(error) }
                 pendingByXid.clear()
@@ -69,6 +81,15 @@ class CompanionSession(private val connection: CompanionConnection) {
                 // automatic reconnect, no offer to report: the remote just sat there
                 // disconnected until somebody backed out and tapped the TV again. Only the
                 // `closing` flag can say a teardown was ours; EOF cannot.
+                //
+                // Traced here, with the link's age, because until now a report could only say that
+                // the link had died, never when: the wire trace stopped at the last frame and the
+                // drop itself had no line. When it ends, and how long after it opened, is what tells
+                // an idle hangup from a pairing the television abandoned from a link that never
+                // properly came up.
+                if (!closing) {
+                    Trace.problem("link lost ${seconds(System.nanoTime() - openedAt)} after it opened", error)
+                }
                 onDisconnect?.invoke(if (closing) null else error)
             }
         }
@@ -215,8 +236,11 @@ class CompanionSession(private val connection: CompanionConnection) {
             // Naming the frame is the difference between a bug report that can be acted on
             // and one that cannot.
             Trace.problem("timed out waiting for a reply to $what after ${timeoutMs}ms")
-            throw ProtocolException("no answer to $what")
+            throw ProtocolException("$NO_ANSWER$what")
         }
         return result
     }
+
+    /** Nanoseconds as "12.3s"; by hand, so a device locale cannot turn the point into a comma. */
+    private fun seconds(nanos: Long): String = "${(nanos / 100_000_000L).coerceAtLeast(0L) / 10.0}s"
 }

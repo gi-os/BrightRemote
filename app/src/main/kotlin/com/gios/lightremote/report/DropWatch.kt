@@ -304,6 +304,20 @@ enum class FaultKind(val label: String, val note: String, val what: String) {
         note = "pairing for now-playing failed partway",
         what = "finish the AirPlay pairing that shows titles and artwork",
     ),
+
+    /**
+     * The Companion pairing — the code for the remote itself — could not get or keep a code on the
+     * television, even after the automatic second try.
+     *
+     * These used to be filed as [Dropped], because the pairing socket reported its end through the
+     * same callback as the remote's own link: light-reports#676, #657, #631 and #590 are all
+     * pairings, titled "the Apple TV dropped the connection".
+     */
+    PairSetupFailed(
+        label = "pair-setup failed",
+        note = "pairing with the Apple TV failed",
+        what = "pair with the Apple TV",
+    ),
 }
 
 /** One report, ready to hand to `Reports.compose`. */

@@ -114,9 +114,12 @@ fun DevicesScreen(
                 if (found.isNotEmpty()) {
                     item(key = "header-found") { SectionLabel("Found") }
                     items(found, key = { "found-${it.name}" }) { device ->
+                        // A row that cannot be tapped says why: a HomePod or a Mac answers the
+                        // same search but cannot show a code, and a television with pairing
+                        // restricted to its household closes the pairing without a word.
                         LightRow(
                             label = device.name,
-                            sub = device.friendlyModel ?: device.host,
+                            sub = device.foundLabel,
                             enabled = device.pairable,
                             onClick = { if (device.pairable) onPair(device) },
                         )
