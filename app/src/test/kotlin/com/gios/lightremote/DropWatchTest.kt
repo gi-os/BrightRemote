@@ -150,4 +150,52 @@ class DropWatchTest {
         rig.now += DropWatch.SETTLE_MS
         assertNotNull(rig.watch.due("t"))
     }
+
+    @Test
+    fun `a tvOS hangup that recovers inside the settle window is counted, not filed`() {
+        val rig = Rig()
+        rig.watch.record(FaultKind.Dropped, "ProtocolException: connection closed by the Apple TV")
+        rig.now += 300
+        rig.watch.recovered()
+        rig.now += DropWatch.SETTLE_MS
+        assertNull(rig.watch.due("t"), "a clean tvOS hangup that healed fast must not file")
+        assertNotNull(rig.watch.heldCause(), "a quieted episode must stay sendable by hand")
+        // The count rides into the next report that does go out.
+        rig.now += DropWatch.FLOOR_MS
+        rig.watch.record(FaultKind.Dropped, "ProtocolException: connection closed by the Apple TV")
+        rig.now += DropWatch.SETTLE_MS + 1
+        val report = assertNotNull(rig.watch.due("t"))
+        assertTrue(report.detail.contains("1 more like this"), report.detail)
+    }
+
+    @Test
+    fun `a tvOS hangup that never recovers still files`() {
+        val rig = Rig()
+        rig.watch.record(FaultKind.Dropped, "ProtocolException: connection closed by the Apple TV")
+        rig.now += DropWatch.SETTLE_MS
+        val report = assertNotNull(rig.watch.due("t"), "a hangup that stayed down must file")
+        assertTrue(report.detail.contains("still disconnected"), report.detail)
+    }
+
+    @Test
+    fun `a tvOS hangup that recovers after the settle window still files`() {
+        val rig = Rig()
+        rig.watch.record(FaultKind.Dropped, "ProtocolException: connection closed by the Apple TV")
+        rig.now += DropWatch.SETTLE_MS + 5_000
+        rig.watch.recovered()
+        val report = assertNotNull(rig.watch.due("t"), "a slow recovery must still file")
+        assertTrue(report.detail.contains("picked itself back up"), report.detail)
+    }
+
+    @Test
+    fun `a fast tvOS hangup with unanswered presses in it still files`() {
+        val rig = Rig()
+        rig.watch.record(FaultKind.Dropped, "ProtocolException: connection closed by the Apple TV")
+        rig.now += 200
+        rig.watch.record(FaultKind.Unanswered, "three presses in a row went unacknowledged")
+        rig.now += 100
+        rig.watch.recovered()
+        rig.now += DropWatch.SETTLE_MS
+        assertNotNull(rig.watch.due("t"), "somebody pressing at a deaf television is worth a report")
+    }
 }

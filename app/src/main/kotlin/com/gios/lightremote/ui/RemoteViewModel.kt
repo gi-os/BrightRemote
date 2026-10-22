@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.gios.lightremote.companion.AuthenticationException
 import com.gios.lightremote.companion.CompanionAuth
 import com.gios.lightremote.companion.CompanionClient
+import com.gios.lightremote.companion.PairStart
 import com.gios.lightremote.companion.Trace
 import com.gios.lightremote.companion.HidCommand
 import com.gios.lightremote.companion.InstalledApp
@@ -49,15 +50,6 @@ private const val RETRY_DELAY_MS = 1_200L
 
 /** Automatic reconnects after a link drops on its own, before Retry becomes manual. */
 private const val LOST_RECONNECTS = 2
-
-/**
- * The least time between two reconnects triggered by the network coming back.
- *
- * Wi-Fi that is flapping produces an edge every time it settles, and each edge would otherwise buy
- * a full ladder of attempts. Half a minute is longer than any flap and shorter than the patience of
- * somebody holding a remote that has stopped working.
- */
-private const val NETWORK_RETRY_FLOOR_MS = 30_000L
 
 /**
  * Where the Companion service listens when nothing has told us otherwise.
@@ -152,11 +144,25 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      *
      * So the network coming back is treated as the one event worth another attempt. See
      * [NetworkWatch] for why this is an edge and deliberately not a longer ladder.
+     *
+     * The callback arrives on ConnectivityManager's thread and is handed to the main thread, where
+     * every other connect decision is made: the edge can now cancel a ladder in flight, and that
+     * must not race a tap doing the same.
      */
-    private val networkWatch by lazy { NetworkWatch(app) { onNetworkBack() } }
+    private val networkWatch by lazy { NetworkWatch(app) { viewModelScope.launch { onNetworkBack() } } }
 
-    /** When the network last bought a reconnect, against [NETWORK_RETRY_FLOOR_MS]. */
+    /** When the network last bought a reconnect, against [LinkRules.NETWORK_RETRY_FLOOR_MS]. */
     private var lastNetworkRetryAt = 0L
+
+    /**
+     * Whether the activity is on screen. The foreground service may only be started from the
+     * foreground, so a connection that comes up while the app is backgrounded — the
+     * network-back reconnect in [onNetworkBack] — must defer its service until the next resume.
+     */
+    private var inForeground = false
+
+    /** Set when a background connect succeeded but the foreground service could not start yet. */
+    private var serviceStartDeferred = false
 
     /**
      * The media session, so BrightControl's lock face grows a transport row over this remote.
@@ -187,6 +193,22 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     private var pendingSetup: CompanionAuth.PairSetup? = null
     private var pendingDevice: DiscoveredDevice? = null
     private var activeDeviceId: String? = null
+
+    /** The request for a code in flight, so Cancel can stop it. */
+    private var pairingJob: Job? = null
+
+    /** New codes asked for since the Pair screen opened, against [PairStart.CODE_RESTARTS]. */
+    private var codeRestarts = 0
+
+    /** Whether the Pair screen is composed; see [onPairScreenShown]. */
+    private var pairScreenOpen = false
+
+    /**
+     * A Companion pairing is under way, from the tap on a Found row to Cancel, back, success or a
+     * final failure. Automatic reconnects stand aside for it: they would take the client's one
+     * socket, which is the pairing's.
+     */
+    private val pairing: Boolean get() = pendingDevice != null
 
     /** The connect attempt in flight, so a second one cannot start beside it. */
     private var connectJob: Job? = null
@@ -252,31 +274,41 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             )
             fault(FaultKind.Unanswered, "three presses in a row went unacknowledged")
         }
-        client.onDisconnected = { cause ->
-            teardownConnectionSideEffects()
-            _state.value = _state.value.copy(
-                connection = ConnectionState.Disconnected,
-                // A clean close is the app's own doing; only surface real failures.
-                error = cause?.let { "Lost the connection: ${it.friendlyMessage()}" },
-                // Nothing to offer: the report files itself a few seconds from now. The row
-                // only comes back if a throttle refuses it.
-                reportable = null,
-            )
-            if (cause != null) {
-                // Sent, not offered. Every unexpected drop, not just the ones still standing
-                // after the reconnects — the old rule called a self-healing drop noise, and
-                // then the link died on every play press for weeks with not one report filed,
-                // because each drop reconnected and disqualified itself. What stops that
-                // becoming a flood is DropWatch: one report per episode, a floor between any
-                // two, and counts carried forward for whatever it swallows.
-                fault(FaultKind.Dropped, "${cause::class.java.simpleName}: ${cause.message}")
-                // A link that drops on its own gets picked back up, twice, before the Retry
-                // row becomes the user's problem. Wi-Fi hiccups and a TV waking from sleep
-                // both look like this, and both fix themselves.
-                if (lostReconnects < LOST_RECONNECTS && activeDeviceId != null) {
-                    lostReconnects++
-                    prefs.devices().firstOrNull { it.id == activeDeviceId }?.let { connect(it) }
-                }
+        // Both handed to the main thread, like the network edge: the reader that notices a socket
+        // ending runs on an IO thread, and a reconnect started from there could race a tap, or a
+        // network edge, starting one of its own.
+        client.onDisconnected = { cause -> viewModelScope.launch { onLinkLost(cause) } }
+        client.onPairingDropped = { cause -> viewModelScope.launch { onPairingDropped(cause) } }
+    }
+
+    /** The remote's own link ended. A null cause is a close the app asked for. */
+    private fun onLinkLost(cause: Throwable?) {
+        // By the time this runs a newer link may already be open — a tap that landed in between —
+        // and tearing down its service, tunnel and media session would be wrong.
+        if (client.isConnected) return
+        teardownConnectionSideEffects()
+        _state.value = _state.value.copy(
+            connection = ConnectionState.Disconnected,
+            // A clean close is the app's own doing; only surface real failures.
+            error = cause?.let { "Lost the connection: ${it.friendlyMessage()}" },
+            // Nothing to offer: the report files itself a few seconds from now. The row
+            // only comes back if a throttle refuses it.
+            reportable = null,
+        )
+        if (cause != null) {
+            // Sent, not offered. Every unexpected drop, not just the ones still standing
+            // after the reconnects — the old rule called a self-healing drop noise, and
+            // then the link died on every play press for weeks with not one report filed,
+            // because each drop reconnected and disqualified itself. What stops that
+            // becoming a flood is DropWatch: one report per episode, a floor between any
+            // two, and counts carried forward for whatever it swallows.
+            fault(FaultKind.Dropped, "${cause::class.java.simpleName}: ${cause.message}")
+            // A link that drops on its own gets picked back up, twice, before the Retry
+            // row becomes the user's problem. Wi-Fi hiccups and a TV waking from sleep
+            // both look like this, and both fix themselves.
+            if (lostReconnects < LOST_RECONNECTS && activeDeviceId != null && !pairing) {
+                lostReconnects++
+                prefs.devices().firstOrNull { it.id == activeDeviceId }?.let { connect(it) }
             }
         }
     }
@@ -326,28 +358,138 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     fun beginPairing(device: DiscoveredDevice) {
         stopDiscovery()
+        endSessionForPairing()
         pendingDevice = device
+        pendingSetup = null
+        codeRestarts = 0
         _state.value = _state.value.copy(
             pairingDeviceName = device.name,
             pairingPin = "",
             pairingBusy = true,
             error = null,
         )
-        viewModelScope.launch {
-            runCatching { client.startPairing(device.host, device.port) }
-                .onSuccess { setup ->
-                    pendingSetup = setup
-                    _state.value = _state.value.copy(pairingBusy = false)
-                }
-                .onFailure { error ->
-                    pendingDevice = null
-                    _state.value = _state.value.copy(
-                        pairingBusy = false,
-                        pairingDeviceName = null,
-                        error = error.friendlyMessage(),
-                    )
-                }
+        // What was tapped, as its record described it. Without this line a pairing report could
+        // not say whether the thing that hung up was a television at all.
+        Trace.step("pair-setup with ${device.name} (${device.describe})")
+        requestCode(device)
+    }
+
+    /**
+     * Pair-setup needs the client's one socket. Left to the client, opening it closed a live remote
+     * session underneath the view model, which went on showing Connected: after a cancelled pairing
+     * the remote looked fine and every button failed. End the session properly instead, and keep
+     * which television it was, so the remote offers Retry rather than "No Apple TV paired".
+     */
+    private fun endSessionForPairing() {
+        connectJob?.cancel()
+        connectJob = null
+        if (_state.value.connection == ConnectionState.Disconnected && !client.isConnected) return
+        teardownConnectionSideEffects()
+        client.disconnect()
+        _state.value = _state.value.copy(connection = ConnectionState.Disconnected)
+    }
+
+    /**
+     * Ask the television for a code, with [PairStart]'s one second chance, and keep the keypad
+     * honest about the answer.
+     *
+     * @param pauseFirst after the television took a code away: let it finish with that socket
+     *   before the next one arrives.
+     */
+    private fun requestCode(device: DiscoveredDevice, pauseFirst: Boolean = false) {
+        pairingJob?.cancel()
+        pairingJob = viewModelScope.launch {
+            if (pauseFirst) delay(PairStart.PAUSE_MS)
+            val result = runCatching {
+                PairStart.withRetry(
+                    attempt = { client.startPairing(device.host, device.port) },
+                    onRetry = { failure, _ ->
+                        Trace.step("pair-setup: no code ($failure), asking once more")
+                    },
+                )
+            }
+            val error = result.exceptionOrNull()
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            // Cancelled, or another device tapped, while this was in flight.
+            if (pendingDevice !== device) return@launch
+            if (error == null) {
+                pendingSetup = result.getOrNull()
+                _state.value = _state.value.copy(pairingBusy = false)
+                return@launch
+            }
+            pendingDevice = null
+            _state.value = _state.value.copy(
+                pairingBusy = false,
+                pairingDeviceName = null,
+                error = PairStart.explain(error) ?: error.friendlyMessage(),
+            )
+            // The two failures that are the television's doing, still there after the second try,
+            // are worth a report. An address that never answered is the network, and the banner
+            // has already said so.
+            if (PairStart.worthRetrying(PairStart.classify(error))) {
+                fault(FaultKind.PairSetupFailed, "${error::class.java.simpleName}: ${error.message}")
+            }
         }
+    }
+
+    /**
+     * The television closed a pair-setup socket the app had not finished with.
+     *
+     * Only one case is handled here: the code is on the television, the keypad is waiting, and
+     * nothing is in flight — light-reports#631 and #657, where the set hung up with the code still
+     * up (the second after two and a half minutes of nobody typing it). While a code is being asked
+     * for, or a typed one is on its way, the exchange waiting on the socket fails by itself and its
+     * own path deals with it.
+     *
+     * Before, this arrived as a lost remote connection: a banner, a report titled "the Apple TV
+     * dropped the connection", and a keypad still wired to a dead socket, where a typed code waited
+     * twenty seconds for an answer that could not come. Now the Pair screen asks for a new code,
+     * once ([PairStart.restartAfterCodeLost]), and says so; a second loss ends the pairing plainly.
+     */
+    private fun onPairingDropped(cause: Throwable) {
+        val device = pendingDevice ?: return
+        if (pendingSetup == null || _state.value.pairingBusy) return
+        // A newer pair-setup socket is already open, so this one is old news.
+        if (client.isConnected) return
+        pendingSetup = null
+        if (PairStart.restartAfterCodeLost(codeRestarts, onScreen = pairScreenOpen && inForeground)) {
+            codeRestarts++
+            Trace.step("pair-setup: the TV took the code away, asking for a new one")
+            _state.value = _state.value.copy(
+                pairingPin = "",
+                pairingBusy = true,
+                error = "The Apple TV took its code away before it was entered. It will show a new one.",
+            )
+            requestCode(device, pauseFirst = true)
+            return
+        }
+        pendingDevice = null
+        _state.value = _state.value.copy(
+            pairingPin = "",
+            pairingBusy = false,
+            pairingDeviceName = null,
+            error = "The Apple TV closed the pairing before the code was entered. Tap it again for a new code.",
+        )
+        // Twice in a row with somebody watching is worth a report. Once, with the phone put down,
+        // is a pairing nobody finished.
+        if (codeRestarts > 0) {
+            fault(
+                FaultKind.PairSetupFailed,
+                "closed with the code up: ${cause::class.java.simpleName}: ${cause.message}",
+            )
+        }
+    }
+
+    /**
+     * The Pair screen is up, or gone. The view model needs to know: a code the television takes
+     * away is only worth asking for again while somebody is looking at the keypad.
+     */
+    fun onPairScreenShown() {
+        pairScreenOpen = true
+    }
+
+    fun onPairScreenGone() {
+        pairScreenOpen = false
     }
 
     /**
@@ -377,9 +519,14 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun cancelPairing() {
+        // Only close the client's socket if it is the pairing's. After a pairing has already ended,
+        // the socket may belong to a reconnect that started since.
+        val live = pendingDevice != null || pairingJob?.isActive == true
+        pairingJob?.cancel()
+        pairingJob = null
         pendingSetup = null
         pendingDevice = null
-        client.disconnect()
+        if (live) client.disconnect()
         _state.value = _state.value.copy(pairingDeviceName = null, pairingPin = "", pairingBusy = false)
     }
 
@@ -402,6 +549,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                             credentials = credentials,
                         ),
                     )
+                    // The remote that opens next is for the television just paired. autoConnect
+                    // picks the last one used, which until now was whichever set was connected
+                    // before this pairing began.
+                    prefs.lastDeviceId = device.name
                     pendingSetup = null
                     pendingDevice = null
                     _state.value = _state.value.copy(
@@ -560,6 +711,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      * The Companion session is deliberately untouched; it has its own resume path.
      */
     fun onBackground() {
+        inForeground = false
         if (airPlaySetup != null) cancelAirPlayPairing()
     }
 
@@ -584,12 +736,15 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             connectJob?.cancel()
             connectJob = null
         }
-        // Already on this television and healthy: the tap was navigation, not a request to tear
-        // down a working session and spend two seconds rebuilding it.
-        if (byHand &&
-            activeDeviceId == device.id &&
-            _state.value.connection == ConnectionState.Connected &&
-            client.isConnected
+        // Already on this television and healthy: the request was navigation — a tap on the row
+        // already connected, or the activity being created again around a live view model — not a
+        // request to tear down a working session and spend a second rebuilding it. Taps only, until
+        // now; see LinkRules.alreadyOn for what the launch path was doing.
+        if (LinkRules.alreadyOn(
+                sameTelevision = activeDeviceId == device.id,
+                connected = _state.value.connection == ConnectionState.Connected,
+                socketOpen = client.isConnected,
+            )
         ) {
             return
         }
@@ -606,7 +761,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             var host = device.host
             var port = device.port
 
-            suspend fun attemptConnect(): Boolean {
+            suspend fun attemptConnect(label: String): Boolean {
                 val result = runCatching { client.connect(host, port, device.credentials) }
                 result.exceptionOrNull()?.let { error ->
                     // A tap cancels the attempt in flight and starts its own. Letting that
@@ -615,6 +770,11 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     // Retry, and filed a bug report — all on top of the connect that replaced it,
                     // which was at that moment half way through a handshake.
                     if (error is kotlinx.coroutines.CancellationException) throw error
+                    // Every failed attempt on the wire, with its cause. Reports used to show three
+                    // "connecting" lines and no reason for any of them, so they could not tell a
+                    // network that was down from a television asleep from a phone dialling the
+                    // LAN over cellular — and the exception names the address it dialled from.
+                    Trace.problem("connect $label failed", error)
                     lastError = error
                     return false
                 }
@@ -655,7 +815,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     // land inside the same refusal — three failures that are really one.
                     delay(RETRY_DELAY_MS shl (attempt - 1))
                 }
-                if (attemptConnect()) return@launch
+                if (attemptConnect("attempt ${attempt + 1} of $CONNECT_ATTEMPTS")) return@launch
             }
 
             // Nobody home at the stored address. The obvious reason is that it is no longer the
@@ -684,9 +844,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     // changed, and a device row still showing the old one after a failure is the
                     // list disagreeing with what the app will do next time.
                     _state.value = _state.value.copy(error = null, paired = prefs.devices())
-                    if (attemptConnect()) return@launch
+                    if (attemptConnect("at the new address")) return@launch
                 }
             }
+            Trace.step("out of attempts: waiting for Retry, a return to the app, or Wi-Fi coming back")
 
             // Worth a report. Every attempt is exhausted at this point, so this is not a
             // hiccup — and the banner it also writes is gone the moment the screen changes,
@@ -753,34 +914,59 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      * only when a television is remembered.
      */
     /**
-     * The phone has a network again, so the reason the last attempts failed may have stopped being
-     * true. Worth exactly one more go.
+     * The phone has a network back that can reach the television, so the reason the last attempts
+     * failed may have stopped being true. Worth exactly one more go.
      *
-     * Guarded the same way [onForeground] is — disconnected, a television to go back to, nothing
-     * already in flight — plus a floor, so Wi-Fi that flaps cannot turn one edge into a stream of
-     * attempts. Not gated on being in the foreground: the media session keeps this remote on
-     * BrightControl's lock face while the app is away, and a link that dropped in a pocket is worth
-     * picking back up for the same reason it was worth holding.
+     * Guarded like [onForeground] — not connected, a television to go back to, no pairing under
+     * way — plus a floor, so Wi-Fi that flaps cannot turn one edge into a stream of attempts. One
+     * difference: a ladder already in flight is started again rather than left alone, because it
+     * was aimed at the network that just went away ([LinkRules.onNetworkEdge] has the reports).
+     * Not gated on being in the foreground: the media session keeps this remote on BrightControl's
+     * lock face while the app is away, and a link that dropped in a pocket is worth picking back up
+     * for the same reason it was worth holding.
      */
     private fun onNetworkBack() {
-        if (_state.value.connection != ConnectionState.Disconnected) return
-        if (connectJob?.isActive == true) return
-        val id = activeDeviceId ?: return
-        val device = prefs.devices().firstOrNull { it.id == id } ?: return
+        val device = activeDeviceId?.let { id -> prefs.devices().firstOrNull { it.id == id } }
         val now = System.currentTimeMillis()
-        if (now - lastNetworkRetryAt < NETWORK_RETRY_FLOOR_MS) return
+        val action = LinkRules.onNetworkEdge(
+            hasTelevision = device != null,
+            pairing = pairing,
+            connected = _state.value.connection == ConnectionState.Connected,
+            attemptInFlight = connectJob?.isActive == true,
+            sinceLastRetryMs = now - lastNetworkRetryAt,
+        )
+        if (action == NetworkRetry.Ignore || device == null) return
         lastNetworkRetryAt = now
-        Trace.step("network back — reconnecting to ${device.name}")
         // A fresh budget: the attempts that ran out did so against a network that was not there,
         // which is not evidence about this television.
         lostReconnects = 0
+        if (action == NetworkRetry.Restart) {
+            // The ladder running now was aimed at the network that just went away. Letting it
+            // finish failing is how the remote used to end up on Retry with Wi-Fi already back.
+            Trace.step("Wi-Fi back during a reconnect — starting it again on Wi-Fi")
+            connectJob?.cancel()
+            connectJob = null
+        } else {
+            Trace.step("network back — reconnecting to ${device.name}")
+        }
         connect(device)
     }
 
     fun onForeground() {
+        inForeground = true
         networkWatch.start()
+        // A connect that came up while the app was backgrounded deferred its foreground service
+        // (it cannot be started from the background). Bring it up now that we are on screen.
+        if (serviceStartDeferred && _state.value.connection == ConnectionState.Connected) {
+            serviceStartDeferred = false
+            activeDeviceId?.let { id ->
+                prefs.devices().firstOrNull { it.id == id }?.let { RemoteService.start(app, it.name) }
+            }
+        }
         if (_state.value.connection != ConnectionState.Disconnected) return
         if (connectJob?.isActive == true) return
+        // The Pair screen owns the client's socket until the pairing ends; see [pairing].
+        if (pairing) return
         // No "or the first one paired" fallback here, unlike [reconnect]. Forgetting the active
         // television clears activeDeviceId, and picking some other remembered set to connect to
         // on the next return to the app is not a thing anyone asked for.
@@ -1028,7 +1214,17 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun onConnected(device: PairedDevice, host: String) {
         activeHost = host
-        RemoteService.start(app, device.name)
+        // A foreground service may only be started while the app is in the foreground. The
+        // network-back reconnect (onNetworkBack) can bring a connection up while the phone is in
+        // a pocket, and starting the service there throws ForegroundServiceStartNotAllowedException
+        // and kills the app. Defer it: the socket and media session live in this process, and the
+        // service is what keeps that process alive once it runs, so it starts on the next resume.
+        if (inForeground) {
+            RemoteService.start(app, device.name)
+            serviceStartDeferred = false
+        } else {
+            serviceStartDeferred = true
+        }
         resetIdleTimer()
         startMrp(device, host)
         updateMediaSession()
@@ -1038,6 +1234,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     private fun teardownConnectionSideEffects() {
         idleJob?.cancel()
         idleJob = null
+        serviceStartDeferred = false
         // Close the open viewing session before the tunnel goes: the end of the link is the
         // last moment we can honestly say the television was being watched.
         watched.flush()
@@ -1080,8 +1277,15 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             // among them; the only route to it is beginAirPlayPairing, on a tap. If neither
             // silent path works, MRP stays off: no metadata, no banner, one trace line, and
             // the UI offers the pairing row instead.
+            // The stored record, read now rather than taken from the connect that got here. The
+            // television can drop the Companion link the moment an AirPlay pairing finishes, and
+            // the reconnect that follows starts from a record read before the new credentials were
+            // saved: in light-reports#407 the link dropped 15 ms after the pairing's last message,
+            // and the reconnect's tunnel fell back to transient pairing and failed with "no salt"
+            // because it never saw them.
+            val current = prefs.devices().firstOrNull { it.id == device.id } ?: device
             val attempts = buildList {
-                device.airPlayCredentials?.let { add(AirPlayAuth.WithCredentials(it)) }
+                current.airPlayCredentials?.let { add(AirPlayAuth.WithCredentials(it)) }
                 add(AirPlayAuth.Transient)
             }
             var lastError: Throwable? = null

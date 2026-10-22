@@ -27,8 +27,10 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
         with:
-          # The default installs the retired `tools` package, which sdkmanager can no longer find.
-          packages: platform-tools
+          # The 'tools' package (the pre-cmdline-tools SDK) was dropped from the SDK index and
+          # `sdkmanager tools` now exits 1, failing the step before any build runs. Install only
+          # what the build needs; platforms/build-tools come from the runner image and AGP.
+          packages: 'platform-tools'
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Unit tests

@@ -1,5 +1,6 @@
 package com.gios.lightremote.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +13,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,6 +32,12 @@ import com.gios.lightremote.ui.theme.lightClickable
  */
 @Composable
 fun PairScreen(vm: RemoteViewModel, onPaired: () -> Unit, onCancel: () -> Unit) {
+    // The view model asks the television for a new code if it takes one away, but only while
+    // this screen is actually up; see RemoteViewModel.onPairingDropped.
+    DisposableEffect(Unit) {
+        vm.onPairScreenShown()
+        onDispose { vm.onPairScreenGone() }
+    }
     PinEntryScreen(
         vm = vm,
         onSubmit = { vm.submitPin(onPaired) },
@@ -57,6 +65,11 @@ fun AirPlayPairScreen(vm: RemoteViewModel, onPaired: () -> Unit, onCancel: () ->
 @Composable
 private fun PinEntryScreen(vm: RemoteViewModel, onSubmit: () -> Unit, onCancel: () -> Unit) {
     val state by vm.state.collectAsStateWithLifecycle()
+
+    // The system back gesture is Cancel. Without this it popped the screen and left the pairing
+    // open behind it: the socket still up, the television still showing its code, and the view
+    // model still believing somebody was about to type it.
+    BackHandler { onCancel() }
 
     Scaffold(
         containerColor = LightColors.Background,

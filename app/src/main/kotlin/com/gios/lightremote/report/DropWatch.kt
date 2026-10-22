@@ -76,7 +76,8 @@ class DropWatch(
      *
      * Does not cancel the report. A drop that self-heals is exactly the one that went unreported
      * for a fortnight here — the old rule called it noise — and "dropped, back in 4s" is a more
-     * useful sentence than either half of it.
+     * useful sentence than either half of it. The one exception is narrow and lives in [due]: a
+     * hangup the television started itself, healed inside the settle window, is counted instead.
      */
     fun recovered() {
         episode?.let { if (it.recoveredAt == null) it.recoveredAt = nowMs() }
@@ -101,19 +102,55 @@ class DropWatch(
         val ledger = Ledger.parse(load())
         val row = ledger.row(signature(ep))
         if (now - row.lastSentAt > STREAK_RESET_MS) row.streak = 0
+        // A television that hangs up on its own and is back before the settle wait ends is
+        // routine tvOS power management, not a fault worth a report: light-reports#541 and
+        // #546 are both this shape, and neither carried anything actionable. Counted, not
+        // dropped: the suppression count rides into the next report that does go out, so a
+        // real pattern is never silently lost. Everything else (a drop that stays down,
+        // recovers slowly, has another cause, or arrives with unanswered presses) files
+        // exactly as before.
+        if (!force && quietlyRecovered(ep)) {
+            suppress(ep, ledger, row)
+            return null
+        }
         // `== 0L` is "nothing has ever been sent", not "sent at the epoch". Without that clause
         // the very first report of an install is held back by a floor it cannot have breached.
         val floorClear = ledger.lastAnyAt == 0L || now - ledger.lastAnyAt >= FLOOR_MS
         val backoffClear = row.lastSentAt == 0L || now - row.lastSentAt >= backoffFor(row.streak)
         if (!force && !(floorClear && backoffClear)) {
-            row.suppressed += ep.faults
-            if (row.suppressedFirstAt == 0L) row.suppressedFirstAt = ep.firstAt
-            row.suppressedLastAt = ep.lastAt
-            store(ledger.serialize())
-            held = ep
+            suppress(ep, ledger, row)
             return null
         }
         return emit(ep, ledger, row, trace)
+    }
+
+    /**
+     * A tvOS-initiated hangup that healed inside the settle window.
+     *
+     * The marker must match the ProtocolException raised in
+     * [com.gios.lightremote.companion.CompanionSession.startReader]. That is the one close
+     * the television initiates itself, as opposed to a timeout or a refusal, which are the
+     * app's own failures to reach it.
+     *
+     * Only the first line decides the cause, but any unanswered press folded into the episode
+     * disqualifies it: somebody was pressing buttons at a television that was not listening,
+     * and that is worth a report however quickly the link came back.
+     */
+    private fun quietlyRecovered(ep: Episode): Boolean {
+        if (ep.kind != FaultKind.Dropped) return false
+        val recoveredAt = ep.recoveredAt ?: return false
+        if (recoveredAt - ep.firstAt > settleMs) return false
+        if (ep.lines.any { it.contains(" ${FaultKind.Unanswered.label}: ") }) return false
+        return ep.lines.firstOrNull()?.contains(TV_HANGUP_MARKER) == true
+    }
+
+    /** Fold a not-filed episode into its signature's running count, kept sendable by hand. */
+    private fun suppress(ep: Episode, ledger: Ledger, row: Ledger.Row) {
+        row.suppressed += ep.faults
+        if (row.suppressedFirstAt == 0L) row.suppressedFirstAt = ep.firstAt
+        row.suppressedLastAt = ep.lastAt
+        store(ledger.serialize())
+        held = ep
     }
 
     /**
@@ -229,6 +266,10 @@ class DropWatch(
 
         /** A fault that has stayed away this long starts over at the top of the backoff. */
         const val STREAK_RESET_MS = 6 * 60 * 60_000L
+
+        /** First-line marker of a drop the television initiated itself. Must match the
+            ProtocolException raised in [com.gios.lightremote.companion.CompanionSession.startReader]. */
+        const val TV_HANGUP_MARKER = "connection closed by the Apple TV"
     }
 }
 
@@ -262,6 +303,20 @@ enum class FaultKind(val label: String, val note: String, val what: String) {
         label = "pairing failed",
         note = "pairing for now-playing failed partway",
         what = "finish the AirPlay pairing that shows titles and artwork",
+    ),
+
+    /**
+     * The Companion pairing — the code for the remote itself — could not get or keep a code on the
+     * television, even after the automatic second try.
+     *
+     * These used to be filed as [Dropped], because the pairing socket reported its end through the
+     * same callback as the remote's own link: light-reports#676, #657, #631 and #590 are all
+     * pairings, titled "the Apple TV dropped the connection".
+     */
+    PairSetupFailed(
+        label = "pair-setup failed",
+        note = "pairing with the Apple TV failed",
+        what = "pair with the Apple TV",
     ),
 }
 

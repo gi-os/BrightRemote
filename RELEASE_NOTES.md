@@ -1,45 +1,13 @@
-## BrightRemote v1.28 — a drop that outlives the Wi-Fi is picked back up, and reports say which exception
+## BrightRemote v1.31 — the remote reconnects when Wi-Fi comes back, and pairing gets a second try
 
-**A dropped link gets three connect attempts inside four seconds, and then the app waits for you to
-notice.** That ladder was written for one failure and it is right about it: a television tearing
-down its own session refuses the next pair-verify for a moment, so one failure proves nothing and
-1.2 seconds later it usually works. It is wrong about the other failure, and
-[light-reports#253] is the other failure written out in full — the drop, then
-`ConnectException: ... ENETUNREACH (Network is unreachable)`. The phone had no network at all. All
-three attempts were spent in four seconds against a radio that was down, and the app then sat
-disconnected with the remote screen open and the user still pressing buttons.
+**Most of the "Apple TV dropped the connection" reports were the phone's own network closing the socket, and the app gave up while Wi-Fi was still on its way back.** Eighteen open reports, twelve separate drops, have one shape: a session that had gone quiet, usually for several minutes, then `SocketException: Software caused connection abort`. That error comes from Android, not the TV. The phone's network closed the socket while it slept. The app noticed and started reconnecting at once, which on a phone that has just lost its Wi-Fi means the attempts have nothing to travel on: they failed at once, or timed out after five seconds with no answer (light-reports#639 tried five times from an address that was not on the home network). The network watcher added in v1.28 was meant to be the second chance, but it only counted "no network, then a network". Losing Wi-Fi usually hands the phone to cellular, so Wi-Fi coming back replaces cellular rather than nothing, and that did not count. And Wi-Fi coming back while the reconnect was still running was ignored, because an attempt was already in progress. Either way the remote stayed on Retry.
 
-Returning to the app already triggers a reconnect. That is no help here, because nobody left.
+**Wi-Fi or Ethernet becoming the phone's network now always buys one more reconnect,** whether it replaced nothing or replaced cellular. If a reconnect is already running at that moment, it starts over on Wi-Fi instead of finishing its attempts against the network that went away. Cellular coming up no longer counts: it cannot reach a TV on your Wi-Fi, and an attempt spent there used up the thirty-second floor that the real edge then ran into a moment later. The floor still holds, so a flapping network cannot turn into a stream of attempts, and a TV that is switched off still costs nothing.
 
-**The network coming back is now worth one more attempt.** A default-network watcher reports the
-edge — no network to some network — and on that edge the app tries again once, with a fresh budget,
-because attempts spent against a missing radio are not evidence about the television.
+**A working connection is no longer redialled when the app's screen is rebuilt.** The app connects to the last TV whenever its activity is created, and Android creates it again on a configuration change while the connection carries on underneath. The traces show a healthy link thrown away and rebuilt twice in about a second (light-reports#591). The launch path now gets the check a tap on the TV's row already had.
 
-The obvious repair was a longer ladder, and it is the wrong one. An earlier build retried on every
-state change and ground away at a television that was simply switched off, which is why the attempts
-are counted and bounded at all. A timer cannot tell a set that is off from a network that is down;
-an edge can. A television that is off produces no edge and costs nothing, which is the property the
-bounded ladder was there to protect. There is a thirty-second floor between two network-triggered
-attempts, so Wi-Fi that flaps cannot turn one edge into a stream of them.
+**Pairing failures are handled as pairing failures.** Four reports (#676, #657, #631, #590) came from the Pair screen and were filed as dropped connections, because the pairing socket reported its end through the same path as the remote's link. That could also set off a reconnect to whichever TV had been connected before, and left the keypad wired to a dead socket. Now, if the TV hangs up or stays silent before showing a code, the app waits a moment and asks once more on a fresh connection, and it waits eight seconds for the answer instead of twenty. If the TV takes its code away before it is typed, the Pair screen asks for a new one, once, and says so. HomePods, Macs, iPads, and TVs that only allow their own household are listed dimmed with the reason: the flags the app used to decide this matched no real device, so it offered every one of them for pairing.
 
-Availability is the test, not validation. `NET_CAPABILITY_VALIDATED` and `NET_CAPABILITY_INTERNET`
-both mean the internet is reachable, and the Apple TV is on the far side of the room rather than the
-far side of the internet. Waiting for validation would mean not reconnecting on exactly the networks
-where the remote still works.
+Reports now carry each failed reconnect attempt with its cause, the moment the link was lost and how long it had been up, and which device a pairing was for, so the next one can say why by itself. The now-playing tunnel also reads the stored AirPlay pairing when it starts, instead of the copy the reconnect began with, which is why #407 lost its titles right after pairing for them.
 
-**And every report of a drop now names the exception it was.** A shake-to-report drop is headed with
-`cause::class.java.simpleName`. Platform types survive minifying and read as themselves; this app's
-own throwables were renamed to one letter, so every clean disconnect arrived headed `a: connection
-closed by the Apple TV` and every failed metadata tunnel `a: transient pairing: no salt`. Seventeen
-open reports whose only grouping key was the letter a. A `-keepnames` rule for this app's throwables
-fixes it, names only — the classes are still shrunk and their members still renamed.
-
-Addresses [light-reports#253], [#268], [#246], [#225] and [#224] — a drop the reconnect ladder
-could not outlive.
-
-Already fixed in v1.27, before these were read: [light-reports#226], the three
-`NetworkOnMainThreadException` lines that silently swallowed the now-playing subscription.
-
-Still open and needing the television: the metadata tunnel refusing with
-`transient pairing: no salt` ([light-reports#268], [#263]) wants the AirPlay pairing UI, which is
-its own piece of work.
+Fixes [light-reports#676] — the Apple TV dropped the connection (the Pair screen, before the code). Also [#661], [#657], [#639], [#631], [#628], [#597], [#591], [#590], [#496], [#481], [#473], [#468], [#465], [#458], [#407], [#359] and [#331].

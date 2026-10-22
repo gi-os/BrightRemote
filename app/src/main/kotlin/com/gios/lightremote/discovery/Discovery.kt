@@ -13,29 +13,6 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** One Apple TV found on the network. */
-data class DiscoveredDevice(
-    val name: String,
-    val host: String,
-    val port: Int,
-    /** Raw `rpmd` model string from the mDNS record, e.g. "AppleTV14,1". */
-    val model: String? = null,
-    /** False when the device has pairing turned off in Settings. */
-    val pairable: Boolean = true,
-) {
-    /** "Apple TV 4K" reads better on a 27-unit-wide screen than "AppleTV14,1". */
-    val friendlyModel: String? get() = when {
-        model == null -> null
-        model.startsWith("AppleTV5,3") -> "Apple TV HD"
-        model.startsWith("AppleTV6,2") -> "Apple TV 4K"
-        model.startsWith("AppleTV11,1") -> "Apple TV 4K (2nd gen)"
-        model.startsWith("AppleTV14,1") -> "Apple TV 4K (3rd gen)"
-        model.startsWith("AudioAccessory") -> "HomePod"
-        model.startsWith("AppleTV") -> "Apple TV"
-        else -> model
-    }
-}
-
 /**
  * Finds Apple TVs by browsing `_companion-link._tcp` over mDNS.
  *
@@ -49,10 +26,6 @@ class Discovery(context: Context) {
     companion object {
         private const val TAG = "LightRemote/Discovery"
         private const val SERVICE_TYPE = "_companion-link._tcp"
-
-        /** Bit in the `rpfl` flags that means "pairing is disabled on this device". */
-        private const val PAIRING_DISABLED_MASK = 0x40000000L
-        private const val PAIRING_WITH_PIN_MASK = 0x00000200L
     }
 
     private val app = context.applicationContext
@@ -104,20 +77,19 @@ class Discovery(context: Context) {
 
             override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
                 val host = serviceInfo.host?.hostAddress ?: return
-                // TXT records only come through from API 34; below that these stay null and
-                // the row falls back to showing the address.
+                // TXT records only come through from API 34; below that these stay null, the row
+                // falls back to showing the address, and the device stays tappable.
                 val attributes = serviceInfo.attributes ?: emptyMap()
-                val model = attributes["rpmd"]?.let { String(it, Charsets.UTF_8) }
-                val flags = attributes["rpfl"]?.let { String(it, Charsets.UTF_8) }
-                    ?.removePrefix("0x")?.toLongOrNull(16) ?: 0L
-                val pairable = (flags and PAIRING_DISABLED_MASK) == 0L
+                val model = CompanionTxt.value(attributes, "rpMd")
+                val flags = CompanionTxt.flags(CompanionTxt.value(attributes, "rpFl"))
 
                 found[serviceInfo.serviceName] = DiscoveredDevice(
                     name = serviceInfo.serviceName,
                     host = host,
                     port = serviceInfo.port,
                     model = model,
-                    pairable = pairable,
+                    flags = flags,
+                    support = CompanionTxt.pairingSupport(model, flags),
                 )
                 publish()
             }

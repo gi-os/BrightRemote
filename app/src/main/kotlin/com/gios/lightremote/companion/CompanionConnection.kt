@@ -47,6 +47,9 @@ class CompanionConnection(private val host: String, private val port: Int) {
 
         /** Refuse absurd frame lengths rather than trying to allocate them. */
         private const val MAX_FRAME_LENGTH = 8 * 1024 * 1024
+
+        /** What [send] says once the socket is gone; [PairStart] recognises it. */
+        const val NOT_CONNECTED = "not connected to the Apple TV"
     }
 
     private var socket: Socket? = null
@@ -60,8 +63,15 @@ class CompanionConnection(private val host: String, private val port: Int) {
 
     fun connect(timeoutMs: Int = 5000) {
         val s = Socket()
-        s.tcpNoDelay = true
-        s.connect(InetSocketAddress(host, port), timeoutMs)
+        try {
+            s.tcpNoDelay = true
+            s.connect(InetSocketAddress(host, port), timeoutMs)
+        } catch (e: Exception) {
+            // A connect that times out or is refused still holds a file descriptor until the
+            // collector gets round to it, and the reconnect ladder makes several of these in a row.
+            runCatching { s.close() }
+            throw e
+        }
         socket = s
         input = s.getInputStream()
         output = s.getOutputStream()
@@ -101,7 +111,7 @@ class CompanionConnection(private val host: String, private val port: Int) {
     private val sendLock = Any()
 
     fun send(type: FrameType, payload: ByteArray) {
-        val stream = output ?: throw IllegalStateException("not connected to the Apple TV")
+        val stream = output ?: throw IllegalStateException(NOT_CONNECTED)
         val active = cipher
         val sealed = active != null && payload.isNotEmpty()
         var length = payload.size

@@ -57,8 +57,14 @@ class CompanionAuth(private val session: CompanionSession) {
         internal val serverPublicKey: ByteArray,
     )
 
-    /** Ask the TV to display a PIN. */
-    suspend fun beginPairSetup(): PairSetup {
+    /**
+     * Ask the TV to display a PIN.
+     *
+     * M1 is the method and sequence TLV with `_pwTy` 1, exactly what pyatv's
+     * `CompanionPairSetupProcedure.start_pairing` sends (pinned by a test against the fake
+     * television). [timeoutMs] is how long to wait for M2; see [PairStart] for the default.
+     */
+    suspend fun beginPairSetup(timeoutMs: Long = PairStart.START_TIMEOUT_MS): PairSetup {
         // One 32-byte secret does double duty: the SRP exponent 'a' now, and the long-term
         // Ed25519 seed afterwards. pyatv does the same, so credentials stay interchangeable.
         val clientPrivateKey = Curve25519.randomBytes(32)
@@ -75,6 +81,7 @@ class CompanionAuth(private val session: CompanionSession) {
                 ),
                 "_pwTy" to 1L,
             ),
+            timeoutMs = timeoutMs,
         )
 
         val tlv = pairingData(response)
