@@ -869,7 +869,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         runCatching {
             Reports.submit(
                 context,
-                Reports.compose(
+                Reports.composeBug(
                     context = context,
                     symptom = Symptom.Other,
                     note = report.note,
