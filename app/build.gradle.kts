@@ -1,24 +1,7 @@
-import java.util.Properties
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-}
-
-/**
- * The key shake-to-report posts issues with. Never in the repository: `local.properties` is
- * ignored by git, and CI hands it in from a repository secret. An empty string is a working
- * build — reports queue on the phone and go out from a later one that has the key.
- */
-val reportToken: String = run {
-    val local = rootProject.file("local.properties")
-    val fromFile = if (local.exists()) {
-        Properties().apply { local.inputStream().use { load(it) } }.getProperty("reportToken")
-    } else {
-        null
-    }
-    fromFile ?: System.getenv("REPORT_TOKEN") ?: ""
 }
 
 android {
@@ -36,7 +19,6 @@ android {
 
         // LightReport.install reads this at startup; light-common has its own BuildConfig,
         // so the app's key has to be handed in rather than looked up across the boundary.
-        buildConfigField("String", "REPORT_TOKEN", "\"$reportToken\"")
 
         // The LPIII is arm64 only; shipping four ABIs tripled the APK for nothing.
         ndk { abiFilters += "arm64-v8a" }
@@ -65,7 +47,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    // buildConfig carries REPORT_TOKEN into the app; see the reportToken block above.
     buildFeatures {
         compose = true
         buildConfig = true
