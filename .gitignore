@@ -9,3 +9,5 @@ captures/
 .cxx/
 keystore.properties
 .kotlin
+*.jks
+*.keystore
