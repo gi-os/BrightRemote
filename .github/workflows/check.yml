@@ -4,7 +4,7 @@ name: Check
 # not main. There is no way to build an APK in the Cowork sandbox — aapt2 ships x86_64-only
 # for Linux — so a change worked on there has never been compiled by anything until it is
 # pushed. Without this the only way to find out was to push to main, which installs onto a
-# phone within minutes. This is that same check with the release step removed.
+# phone within minutes. This is that same check with disposable signing keys and no release.
 on:
   push:
     branches-ignore: [main]
@@ -51,3 +51,33 @@ jobs:
           GPR_USER: ${{ secrets.GPR_USER }}
           GPR_TOKEN: ${{ secrets.GPR_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test release signer rotation
+        shell: bash
+        run: |
+          test_dir=$(mktemp -d "$RUNNER_TEMP/brightremote-rotation-test.XXXXXX")
+          trap 'rm -rf -- "$test_dir"' EXIT
+          apksigner="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          unsigned=app/build/outputs/apk/release/app-release-unsigned.apk
+          export KEYSTORE_PASSWORD="$(openssl rand -hex 18)" KEY_PASSWORD="$(openssl rand -hex 18)"
+          for alias in original rotated; do
+            keytool -genkeypair -storetype JKS -keystore "$test_dir/$alias.jks" -alias "$alias" \
+              -storepass:env KEYSTORE_PASSWORD -keypass:env KEY_PASSWORD -keyalg RSA -keysize 2048 \
+              -validity 1 -dname "CN=BrightRemote Disposable $alias"
+            keytool -exportcert -keystore "$test_dir/$alias.jks" -alias "$alias" -storepass:env KEYSTORE_PASSWORD \
+              | sha256sum | cut -d ' ' -f 1 > "$test_dir/$alias.txt"
+          done
+          export KEYSTORE_FILE="$test_dir/rotated.jks" KEY_ALIAS=rotated SIGNING_LINEAGE_FILE="$test_dir/signing.lineage"
+          "$apksigner" rotate --out "$SIGNING_LINEAGE_FILE" \
+            --old-signer --ks "$test_dir/original.jks" --ks-key-alias original \
+            --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD --set-installed-data true --set-rollback false \
+            --new-signer --ks "$KEYSTORE_FILE" --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD
+          bash scripts/sign-release.sh "$unsigned" "$test_dir/rotated.apk" "$test_dir/original.txt" "$test_dir/rotated.txt"
+
+          printf '%064d\n' 0 > "$test_dir/wrong-root.txt"
+          if bash scripts/sign-release.sh "$unsigned" "$test_dir/wrong-root.apk" "$test_dir/wrong-root.txt" "$test_dir/rotated.txt" > "$test_dir/rejection.log"; then
+            echo '::error::Release signing accepted an unexpected lineage root'
+            exit 1
+          fi
+          grep -Fx '::error::APK lineage must link the pinned original and rotated certificates' "$test_dir/rejection.log"
