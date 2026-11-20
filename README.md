@@ -359,12 +359,10 @@ out.
 ## Building
 
 Requires JDK 17 and the Android SDK. CI (`.github/workflows/build.yml`) runs the unit
-tests (45 tests, ~22s), builds a signed release APK, checks the signing certificate
-against `signing-fingerprint.txt`, verifies a launcher icon is declared, and publishes one
-GitHub Release per push to `main` — **a push is a release, not a cosmetic action**. The
-keystore is committed at `keystore/lightremote.jks` on purpose: a stable certificate is
-what lets `adb install -r` upgrade in place and keeps Obtainium updates from failing with
-an opaque `Failure: Invalid`.
+tests (45 tests, ~22s), builds a release APK, signs it with the new key and verifies its
+lineage against the original and rotated certificate pins, verifies a launcher icon is
+declared, and publishes one GitHub Release per push to `main` — **a push is a release,
+not a cosmetic action**.
 
 The release tag is `v<versionName>.<run>` — CI derives `<run>` from the workflow run
 number and stamps it into `app/build.gradle.kts` at build time (not committed back).
@@ -383,6 +381,68 @@ python3 scripts/generate_ui_icons.py --preview /tmp/icons.png
 Everything else visual is ported from [`lightphone/light-sdk`][sdk] rather than
 approximated: 27x31 grid, type scale against a 600px vertical baseline, Akkurat from
 `SystemFonts`, no ripples, 45ms haptic on finger-down.
+
+Without signing credentials, the release APK is unsigned and debug builds use the standard Android
+debug key. Neither can update an installed production APK.
+
+### Release signing
+
+Before merging the signing change, disable **Build & Release APK** so the merge does
+not publish. In a private directory outside the checkout, use Android Build Tools
+35.0.0 to generate the replacement key and create a proof of rotation from the original
+release key. Use fresh passwords when prompted.
+
+```sh
+keytool -genkeypair -storetype JKS -keystore brightremote-new.jks -alias brightremote-release \
+  -keyalg RSA -keysize 3072 -validity 10000
+
+apksigner rotate --out brightremote.lineage \
+  --old-signer --ks /path/to/original/lightremote.jks --ks-key-alias lightremote \
+  --set-installed-data true --set-rollback false \
+  --new-signer --ks brightremote-new.jks --ks-key-alias brightremote-release
+
+apksigner lineage --in brightremote.lineage --print-certs
+```
+
+Verify that signer #1's SHA-256 digest matches `signing-lineage-root-fingerprint.txt`,
+then replace `signing-fingerprint.txt` with signer #2's SHA-256 digest. Do not change
+the original fingerprint. Keep the original private key out of CI; it is only needed
+offline to create the lineage.
+
+In [BrightRemote's environment settings](https://github.com/gi-os/BrightRemote/settings/environments),
+create an environment named `release`. Under **Deployment branches and tags**, choose
+**Selected branches and tags** and add a single **Branch** rule for `main`, with no tag
+rules. Add the five secrets below to that environment only. Do not use repository-wide
+secrets or upload the original key or its passwords.
+
+| Secret | Value |
+| --- | --- |
+| `RELEASE_KEYSTORE_BASE64` | Base64-encoded `brightremote-new.jks` |
+| `SIGNING_LINEAGE_BASE64` | Base64-encoded `brightremote.lineage` |
+| `KEYSTORE_PASSWORD` | New keystore password |
+| `KEY_ALIAS` | `brightremote-release` |
+| `KEY_PASSWORD` | New key password |
+
+On Linux, stream the files and enter the passwords at the prompts:
+
+```sh
+base64 -w 0 brightremote-new.jks | gh secret set RELEASE_KEYSTORE_BASE64 --env release --repo gi-os/BrightRemote
+base64 -w 0 brightremote.lineage | gh secret set SIGNING_LINEAGE_BASE64 --env release --repo gi-os/BrightRemote
+gh secret set KEYSTORE_PASSWORD --env release --repo gi-os/BrightRemote
+gh secret set KEY_ALIAS --env release --repo gi-os/BrightRemote --body brightremote-release
+gh secret set KEY_PASSWORD --env release --repo gi-os/BrightRemote
+```
+
+CI signs with the new key using APK Signature Scheme v3 and verifies the proof of rotation
+from the original pin to the new pin. BrightRemote requires Android API 29, so no supported
+device needs a v1/v2 signature or the old private key. Android can accept an in-place update,
+but a catalog that compares only the current certificate can still hide it from users on
+the old signer. Coordinate the BrightMarket catalog/updater transition before re-enabling
+publishing, and only re-enable it for an authorized release.
+
+A push to `main` (other than ignored paths) or a manual run of `build.yml` builds,
+signs, tags, and publishes. Tag pushes do not trigger it. Branch and PR checks
+in `check.yml` publish nothing.
 
 ## Contributing
 
